@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Attendance Monitor — Sign In</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="login-body">
+  <div class="login-card">
+    <div class="login-mark">
+      <span class="dot"></span>
+      <span class="mark-text">ATTENDANCE MONITOR</span>
+    </div>
+    <p class="login-sub">Independent monitoring system · not connected to TimeTrack Lite</p>
+
+    <form id="loginForm" class="login-form">
+      <label>Username
+        <input type="text" id="username" autocomplete="username" required>
+      </label>
+      <label>Password
+        <input type="password" id="password" autocomplete="current-password" required>
+      </label>
+      <button type="submit">Sign in</button>
+      <p id="loginError" class="error-text"></p>
+    </form>
+  </div>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/login.js"></script>
+</body>
+</html>

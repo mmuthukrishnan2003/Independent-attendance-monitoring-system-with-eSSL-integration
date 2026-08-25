@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Attendance Monitor — Dashboard</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="shell">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="dot"></span>
+      <div>
+        <div class="brand-title">ATTENDANCE</div>
+        <div class="brand-sub">MONITOR</div>
+      </div>
+    </div>
+
+    <nav class="nav" id="nav">
+      <button data-view="live" class="nav-item active">Live board</button>
+      <button data-view="employees" class="nav-item">Employees</button>
+      <button data-view="devices" class="nav-item">Devices</button>
+      <button data-view="reports" class="nav-item">Reports</button>
+      <button data-view="settings" class="nav-item admin-only">Settings</button>
+      <button data-view="users" class="nav-item admin-only">Portal users</button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div id="whoami" class="whoami">—</div>
+      <button id="logoutBtn" class="ghost-btn">Sign out</button>
+    </div>
+  </aside>
+
+  <main class="content">
+
+    <!-- LIVE BOARD -->
+    <section id="view-live" class="view">
+      <header class="view-head">
+        <div>
+          <h1>Live attendance board</h1>
+          <p class="muted">Real-time punch status · auto-refreshes every 15s</p>
+        </div>
+        <div class="stat-row" id="liveStats"></div>
+      </header>
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-head"><h2>Today — employee status</h2></div>
+          <div class="table-wrap"><table id="liveTable"><thead>
+            <tr><th>Employee</th><th>Dept</th><th>Status</th><th>Punch IN</th><th>Punch OUT</th><th>Duration</th></tr>
+          </thead><tbody></tbody></table></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Recent punches</h2></div>
+          <div class="table-wrap"><table id="feedTable"><thead>
+            <tr><th>Time</th><th>Employee</th><th>Type</th><th>Device</th></tr>
+          </thead><tbody></tbody></table></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- EMPLOYEES -->
+    <section id="view-employees" class="view hidden">
+      <header class="view-head">
+        <div><h1>Employees</h1><p class="muted">Directory, profiles and attendance history</p></div>
+        <input id="empSearch" class="search-input" placeholder="Search name or code…">
+      </header>
+      <div class="grid-split">
+        <div class="panel">
+          <div class="table-wrap"><table id="empTable"><thead>
+            <tr><th>Code</th><th>Name</th><th>Department</th><th>Designation</th><th>Status</th></tr>
+          </thead><tbody></tbody></table></div>
+        </div>
+        <div class="panel" id="empDetailPanel">
+          <div class="panel-head"><h2>Select an employee</h2></div>
+          <div id="empDetail" class="empty-hint">Click a row to view profile & history.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- DEVICES -->
+    <section id="view-devices" class="view hidden">
+      <header class="view-head">
+        <div><h1>Devices</h1><p class="muted">eSSL / ZKTeco biometric devices · read-only monitoring</p></div>
+        <button id="refreshDevices" class="ghost-btn">Refresh status</button>
+      </header>
+      <div class="device-grid" id="deviceGrid"></div>
+      <div class="panel" style="margin-top:20px">
+        <div class="panel-head"><h2>Device records</h2>
+          <select id="deviceRecordsSelect"></select>
+        </div>
+        <div class="table-wrap"><table id="deviceRecordsTable"><thead>
+          <tr><th>Time</th><th>Employee</th><th>Type</th></tr>
+        </thead><tbody></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- REPORTS -->
+    <section id="view-reports" class="view hidden">
+      <header class="view-head">
+        <div><h1>Reports</h1><p class="muted">Generate and export attendance reports</p></div>
+      </header>
+      <div class="panel">
+        <div class="report-controls">
+          <select id="reportType">
+            <option value="daily">Daily attendance</option>
+            <option value="weekly">Weekly attendance</option>
+            <option value="monthly">Monthly attendance</option>
+            <option value="employee-wise">Employee-wise summary</option>
+            <option value="device-wise">Device-wise records</option>
+            <option value="late-arrivals">Late arrivals</option>
+            <option value="early-departures">Early departures</option>
+            <option value="overtime">Overtime</option>
+            <option value="total-hours">Total working hours</option>
+          </select>
+          <label>From <input type="date" id="reportFrom"></label>
+          <label>To <input type="date" id="reportTo"></label>
+          <button id="runReport">Generate</button>
+          <button id="exportReport" class="ghost-btn">Export .xlsx</button>
+        </div>
+        <div class="table-wrap"><table id="reportTable"><thead><tr></tr></thead><tbody></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="view-settings" class="view hidden">
+      <header class="view-head"><div><h1>Settings</h1><p class="muted">Email notifications & attendance policy</p></div></header>
+      <div class="panel settings-panel">
+        <div class="toggle-row">
+          <div><strong>Late arrival email alerts</strong><p class="muted">Send an email automatically when an employee arrives late</p></div>
+          <label class="switch"><input type="checkbox" id="toggleLateEmail"><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row">
+          <div><strong>Daily working report email</strong><p class="muted">Send the automatic daily attendance report</p></div>
+          <label class="switch"><input type="checkbox" id="toggleDailyReport"><span class="slider"></span></label>
+        </div>
+        <div class="settings-fields">
+          <label>Office start time <input type="time" id="officeStart"></label>
+          <label>Late grace (minutes) <input type="number" id="graceMinutes"></label>
+          <label>Standard work hours <input type="number" id="standardHours"></label>
+          <label>Daily report send time <input type="time" id="reportSendTime"></label>
+          <label>Report recipients (comma separated) <input type="text" id="reportRecipients"></label>
+        </div>
+        <div class="settings-actions">
+          <button id="saveSettings">Save settings</button>
+          <button id="sendNow" class="ghost-btn">Send daily report now</button>
+        </div>
+        <p id="settingsMsg" class="success-text"></p>
+      </div>
+    </section>
+
+    <!-- USERS -->
+    <section id="view-users" class="view hidden">
+      <header class="view-head"><div><h1>Portal users</h1><p class="muted">Admin, manager and employee-scoped logins</p></div></header>
+      <div class="grid-split">
+        <div class="panel">
+          <div class="table-wrap"><table id="usersTable"><thead>
+            <tr><th>Username</th><th>Role</th><th>Linked employee</th></tr>
+          </thead><tbody></tbody></table></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Create user</h2></div>
+          <form id="newUserForm" class="stacked-form">
+            <label>Username <input type="text" id="newUsername" required></label>
+            <label>Password <input type="password" id="newPassword" required></label>
+            <label>Role
+              <select id="newRole"><option value="admin">Admin</option><option value="manager">Manager</option><option value="user" selected>User (self-only)</option></select>
+            </label>
+            <label>Linked employee ID <input type="number" id="newEmployeeId" placeholder="required for 'User' role"></label>
+            <button type="submit">Create user</button>
+            <p id="newUserMsg" class="success-text"></p>
+          </form>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/dashboard.js"></script>
+</body>
+</html>
