@@ -4,15 +4,22 @@ pipeline {
     environment {
         APP_NAME = 'essl-monitor'
         APP_DIR = '/opt/essl-monitor'
-        BACKEND_DIR = '/opt/essl-monitor/backend'
         APP_PORT = '5001'
+
+        PGHOST = '172.16.0.111'
+        PGUSER = 'postgres'
+        PGDATABASE = 'essl_monitor'
+        PGPORT = '5432'
     }
 
     stages {
 
         stage('Checkout') {
             steps {
-                echo '=== Checking out source code ==='
+                echo '======================================'
+                echo 'Checking out GitHub repository'
+                echo '======================================'
+
                 checkout scm
             }
         }
@@ -20,9 +27,9 @@ pipeline {
         stage('Environment Check') {
             steps {
                 sh '''
-                    echo "=============================="
-                    echo "Environment"
-                    echo "=============================="
+                    echo "======================================"
+                    echo "Environment Check"
+                    echo "======================================"
 
                     echo "Node:"
                     node -v
@@ -38,6 +45,40 @@ pipeline {
 
                     echo "PM2:"
                     pm2 -v
+
+                    echo "======================================"
+                '''
+            }
+        }
+
+        stage('Detect Project Structure') {
+            steps {
+                sh '''
+                    echo "======================================"
+                    echo "Detecting Node.js Application"
+                    echo "======================================"
+
+                    PACKAGE_FILE=$(find . -maxdepth 5 -type f -name "package.json" | head -n 1)
+
+                    if [ -z "$PACKAGE_FILE" ]; then
+                        echo "ERROR: package.json was not found."
+                        echo ""
+                        echo "Repository files:"
+                        find . -maxdepth 5 -type f | sort
+                        exit 1
+                    fi
+
+                    APP_ROOT=$(dirname "$PACKAGE_FILE")
+
+                    echo "package.json:"
+                    echo "$PACKAGE_FILE"
+
+                    echo "Application root:"
+                    echo "$APP_ROOT"
+
+                    echo "$APP_ROOT" > .app-root
+
+                    echo "======================================"
                 '''
             }
         }
@@ -45,31 +86,43 @@ pipeline {
         stage('Create Application Directory') {
             steps {
                 sh '''
-                    mkdir -p ${APP_DIR}
-                    mkdir -p ${APP_DIR}/backend
-                    mkdir -p ${APP_DIR}/frontend
+                    echo "======================================"
+                    echo "Creating Application Directory"
+                    echo "======================================"
+
+                    mkdir -p "${APP_DIR}"
+                    mkdir -p "${APP_DIR}/backend"
+                    mkdir -p "${APP_DIR}/frontend"
 
                     echo "Application directory:"
-                    ls -ld ${APP_DIR}
+                    ls -ld "${APP_DIR}"
                 '''
             }
         }
 
         stage('Install Dependencies') {
             steps {
-                dir('backend') {
-                    sh '''
-                        echo "Installing backend dependencies..."
+                sh '''
+                    echo "======================================"
+                    echo "Installing Node.js Dependencies"
+                    echo "======================================"
 
-                        if [ -f package-lock.json ]; then
-                            npm ci
-                        else
-                            echo "package-lock.json not found."
-                            echo "Running npm install..."
-                            npm install
-                        fi
-                    '''
-                }
+                    APP_ROOT=$(cat .app-root)
+
+                    cd "$APP_ROOT"
+
+                    if [ -f package-lock.json ]; then
+                        echo "package-lock.json found"
+                        echo "Running npm ci..."
+                        npm ci
+                    else
+                        echo "package-lock.json not found"
+                        echo "Running npm install..."
+                        npm install
+                    fi
+
+                    echo "Dependencies installed successfully."
+                '''
             }
         }
 
@@ -86,7 +139,13 @@ pipeline {
                     )
                 ]) {
                     sh '''
-                        cat > backend/.env <<EOF
+                        echo "======================================"
+                        echo "Creating Production Environment"
+                        echo "======================================"
+
+                        APP_ROOT=$(cat .app-root)
+
+                        cat > "$APP_ROOT/.env" <<EOF
 PGHOST=172.16.0.111
 PGUSER=postgres
 PGPASSWORD=${POSTGRES_PASSWORD}
@@ -102,11 +161,18 @@ JWT_SECRET=${JWT_SECRET}
 
 OFFICE_START_TIME=09:00
 LATE_GRACE_MINUTES=10
+
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_USER=
+SMTP_PASS=
+MAIL_FROM=
+DAILY_REPORT_RECIPIENTS=
 EOF
 
-                        chmod 600 backend/.env
+                        chmod 600 "$APP_ROOT/.env"
 
-                        echo "Production environment created."
+                        echo ".env created successfully."
                     '''
                 }
             }
@@ -121,24 +187,30 @@ EOF
                     )
                 ]) {
                     sh '''
+                        echo "======================================"
+                        echo "Checking PostgreSQL Database"
+                        echo "======================================"
+
                         export PGPASSWORD="${POSTGRES_PASSWORD}"
 
                         DATABASE_EXISTS=$(psql \
-                            -h 172.16.0.111 \
-                            -U postgres \
+                            -h "${PGHOST}" \
+                            -U "${PGUSER}" \
                             -d postgres \
-                            -tAc "SELECT 1 FROM pg_database WHERE datname='essl_monitor'")
+                            -tAc "SELECT 1 FROM pg_database WHERE datname='${PGDATABASE}'")
 
                         if [ "$DATABASE_EXISTS" = "1" ]; then
-                            echo "Database essl_monitor already exists."
+                            echo "Database ${PGDATABASE} already exists."
                         else
-                            echo "Creating database essl_monitor..."
+                            echo "Creating database ${PGDATABASE}..."
 
                             psql \
-                                -h 172.16.0.111 \
-                                -U postgres \
+                                -h "${PGHOST}" \
+                                -U "${PGUSER}" \
                                 -d postgres \
-                                -c "CREATE DATABASE essl_monitor"
+                                -c "CREATE DATABASE ${PGDATABASE}"
+
+                            echo "Database created successfully."
                         fi
                     '''
                 }
@@ -147,42 +219,74 @@ EOF
 
         stage('Database Migration') {
             steps {
-                dir('backend') {
-                    sh '''
-                        echo "Running database migration..."
+                sh '''
+                    echo "======================================"
+                    echo "Database Migration"
+                    echo "======================================"
+
+                    APP_ROOT=$(cat .app-root)
+
+                    cd "$APP_ROOT"
+
+                    if npm run | grep -q "migrate"; then
+                        echo "Migration script found."
                         npm run migrate
-                    '''
-                }
+                    else
+                        echo "No migration script found."
+                        echo "Skipping migration."
+                    fi
+                '''
             }
         }
 
         stage('Test') {
             steps {
-                dir('backend') {
-                    sh '''
-                        if npm run | grep -q "test"; then
-                            npm test
-                        else
-                            echo "No test script configured."
-                        fi
-                    '''
-                }
+                sh '''
+                    echo "======================================"
+                    echo "Application Test"
+                    echo "======================================"
+
+                    APP_ROOT=$(cat .app-root)
+
+                    cd "$APP_ROOT"
+
+                    if npm run | grep -q "test"; then
+                        echo "Test script found."
+                        npm test
+                    else
+                        echo "No test script configured."
+                        echo "Skipping tests."
+                    fi
+                '''
             }
         }
 
         stage('Deploy Application') {
             steps {
                 sh '''
-                    echo "Deploying application..."
+                    echo "======================================"
+                    echo "Deploying Application"
+                    echo "======================================"
+
+                    APP_ROOT=$(cat .app-root)
+
+                    echo "Source:"
+                    echo "$APP_ROOT"
+
+                    echo "Destination:"
+                    echo "$APP_DIR"
 
                     rsync -av \
                         --delete \
                         --exclude='.git' \
                         --exclude='node_modules' \
                         --exclude='.env' \
-                        ./ ${APP_DIR}/
+                        "$APP_ROOT/" \
+                        "$APP_DIR/"
 
-                    cd ${BACKEND_DIR}
+                    cp "$APP_ROOT/.env" "$APP_DIR/.env"
+
+                    cd "$APP_DIR"
 
                     if [ -f package-lock.json ]; then
                         npm ci --omit=dev
@@ -190,7 +294,9 @@ EOF
                         npm install --omit=dev
                     fi
 
-                    echo "Application deployed."
+                    chmod 600 "$APP_DIR/.env"
+
+                    echo "Application deployed successfully."
                 '''
             }
         }
@@ -198,19 +304,32 @@ EOF
         stage('Configure PM2') {
             steps {
                 sh '''
-                    cd ${BACKEND_DIR}
+                    echo "======================================"
+                    echo "Configuring PM2"
+                    echo "======================================"
 
-                    if pm2 describe ${APP_NAME} > /dev/null 2>&1; then
-                        echo "Restarting existing application..."
-                        pm2 restart ${APP_NAME}
+                    cd "$APP_DIR"
+
+                    if pm2 describe "$APP_NAME" > /dev/null 2>&1; then
+
+                        echo "Application already exists in PM2."
+                        echo "Restarting application..."
+
+                        pm2 restart "$APP_NAME"
+
                     else
-                        echo "Starting application..."
-                        pm2 start src/server.js --name ${APP_NAME}
+
+                        echo "Starting application with PM2..."
+
+                        pm2 start src/server.js \
+                            --name "$APP_NAME"
+
                     fi
 
                     pm2 save
 
-                    echo "PM2 status:"
+                    echo ""
+                    echo "PM2 Status:"
                     pm2 status
                 '''
             }
@@ -219,17 +338,30 @@ EOF
         stage('Health Check') {
             steps {
                 sh '''
-                    echo "Waiting for application..."
+                    echo "======================================"
+                    echo "Application Health Check"
+                    echo "======================================"
+
                     sleep 5
 
-                    curl -f http://127.0.0.1:${APP_PORT}/
+                    echo "Checking:"
+                    echo "http://127.0.0.1:${APP_PORT}/"
+
+                    curl -f "http://127.0.0.1:${APP_PORT}/"
 
                     echo ""
                     echo "======================================"
-                    echo " eSSL Monitor Deployment Successful"
+                    echo "DEPLOYMENT SUCCESSFUL"
                     echo "======================================"
+                    echo ""
                     echo "Dashboard:"
                     echo "http://172.16.0.111:${APP_PORT}/"
+                    echo ""
+                    echo "Application:"
+                    echo "$APP_NAME"
+                    echo ""
+                    echo "PM2:"
+                    pm2 status
                     echo "======================================"
                 '''
             }
@@ -237,12 +369,28 @@ EOF
     }
 
     post {
+
         success {
-            echo 'eSSL Monitor deployment completed successfully.'
+            echo '''
+========================================
+ eSSL Attendance Monitor
+ Deployment Successful
+========================================
+Dashboard:
+http://172.16.0.111:5000/
+========================================
+'''
         }
 
         failure {
-            echo 'Deployment failed. Check the Jenkins console log.'
+            echo '''
+========================================
+ eSSL Attendance Monitor
+ Deployment FAILED
+========================================
+Check the failed Jenkins stage.
+========================================
+'''
         }
     }
 }
