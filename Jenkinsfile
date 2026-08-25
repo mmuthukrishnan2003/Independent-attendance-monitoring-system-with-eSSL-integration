@@ -1,3 +1,4 @@
+```groovy
 pipeline {
 
     agent any
@@ -17,7 +18,6 @@ pipeline {
         APP_ROOT = '/opt/essl-monitor'
         APP_CURRENT = '/opt/essl-monitor/current'
         APP_PORT = '5001'
-        DEPLOY_USER = 'jenkins'
     }
 
     stages {
@@ -93,7 +93,6 @@ pipeline {
 
                     echo ".env found"
 
-                    # Do not print database password into Jenkins logs
                     set +x
                     set -a
                     . "$APP_ROOT/.env"
@@ -144,7 +143,6 @@ pipeline {
                     echo "        POSTGRESQL CONNECTION"
                     echo "=========================================="
 
-                    # Load environment without echoing secrets
                     set +x
                     set -a
                     . "$APP_ROOT/.env"
@@ -369,10 +367,12 @@ pipeline {
                         --time \
                         --update-env
 
+                    echo ""
                     echo "PM2 process started"
 
                     pm2 save
 
+                    echo ""
                     echo "PM2 application started"
                 '''
             }
@@ -398,7 +398,9 @@ pipeline {
 
                     PM2_STATUS=$(pm2 jlist | node -e '
                         let input = "";
+
                         process.stdin.on("data", d => input += d);
+
                         process.stdin.on("end", () => {
                             try {
                                 const data = JSON.parse(input);
@@ -409,6 +411,7 @@ pipeline {
                                 } else {
                                     console.log(app.pm2_env.status);
                                 }
+
                             } catch (e) {
                                 console.log("ERROR");
                             }
@@ -418,27 +421,74 @@ pipeline {
                     echo "PM2 status: $PM2_STATUS"
 
                     if [ "$PM2_STATUS" != "online" ]; then
+
                         echo ""
                         echo "ERROR: PM2 application is NOT online."
                         echo ""
+
                         echo "Last application logs:"
                         pm2 logs "$APP_NAME" --lines 50 --nostream || true
+
                         exit 1
                     fi
 
                     echo ""
-                    echo "Checking application port $APP_PORT..."
-
-                    curl -fsS \
-                        --connect-timeout 5 \
-                        --max-time 10 \
-                        "http://127.0.0.1:$APP_PORT/" \
-                        > /dev/null
-
-                    echo "Application HTTP health check PASSED"
+                    echo "PM2 application is ONLINE."
 
                     echo ""
-                    echo "PM2 and HTTP health checks PASSED"
+                    echo "Checking application port $APP_PORT..."
+
+                    HTTP_CODE=$(curl \
+                        -s \
+                        -o /dev/null \
+                        -w "%{http_code}" \
+                        --connect-timeout 5 \
+                        --max-time 10 \
+                        "http://127.0.0.1:$APP_PORT/")
+
+                    echo "HTTP response code: $HTTP_CODE"
+
+                    case "$HTTP_CODE" in
+
+                        2*)
+                            echo "Application returned successful HTTP response."
+                            ;;
+
+                        3*)
+                            echo "Application returned HTTP redirect."
+                            ;;
+
+                        4*)
+                            echo "Application is responding."
+                            echo "HTTP $HTTP_CODE is acceptable because the route may not exist."
+                            ;;
+
+                        5*)
+                            echo "ERROR: Application returned server error HTTP $HTTP_CODE"
+                            echo ""
+                            echo "Last application logs:"
+                            pm2 logs "$APP_NAME" --lines 50 --nostream || true
+                            exit 1
+                            ;;
+
+                        000)
+                            echo "ERROR: Could not connect to application."
+                            echo ""
+                            echo "Last application logs:"
+                            pm2 logs "$APP_NAME" --lines 50 --nostream || true
+                            exit 1
+                            ;;
+
+                        *)
+                            echo "ERROR: Unexpected HTTP response: $HTTP_CODE"
+                            exit 1
+                            ;;
+                    esac
+
+                    echo ""
+                    echo "=========================================="
+                    echo "        HEALTH CHECK PASSED"
+                    echo "=========================================="
                 '''
             }
         }
@@ -476,7 +526,7 @@ pipeline {
        DEPLOYMENT SUCCESSFUL
 ==============================================
 
-Application:
+Dashboard:
 http://172.16.0.111:5001
 '''
         }
@@ -513,3 +563,4 @@ http://172.16.0.111:5001
         }
     }
 }
+```
