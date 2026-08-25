@@ -27,12 +27,15 @@ async function upsertDevice({ name, ip, port }) {
 
 async function markDeviceStatus(deviceId, status, errorMsg = null) {
   await pool.query(
-    `UPDATE devices SET status = $2, last_seen_at = CASE WHEN $2 = 'online' THEN now() ELSE last_seen_at END,
-     last_error = $3, updated_at = now() WHERE id = $1`,
+    `UPDATE devices
+     SET status = $2::varchar,
+         last_seen_at = CASE WHEN $2::varchar = 'online' THEN now() ELSE last_seen_at END,
+         last_error = $3,
+         updated_at = now()
+     WHERE id = $1`,
     [deviceId, status, errorMsg]
   );
 }
-
 async function ensureEmployee(deviceUserId, name) {
   const existing = await pool.query('SELECT * FROM employees WHERE device_user_id = $1', [deviceUserId]);
   if (existing.rows.length) return existing.rows[0];
