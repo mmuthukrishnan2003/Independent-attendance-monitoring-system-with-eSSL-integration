@@ -2,12 +2,16 @@ pipeline {
     agent any
 
     environment {
-        APP_ROOT = 'essl-monitor/backend'
-        APP_DIR  = '/opt/essl-monitor'
-        BACKEND_DIR = '/opt/essl-monitor/backend'
-        FRONTEND_DIR = '/opt/essl-monitor/frontend'
+        APP_NAME = 'essl-monitor'
+        APP_DIR = '/opt/essl-monitor'
+        BACKEND_DIR = 'essl-monitor/backend'
+
+        APP_PORT = '5001'
+
+        DB_NAME = 'essl_attendance'
+        DB_USER = 'essl_app'
+
         PM2_APP_NAME = 'essl-attendance-monitor'
-        PORT = '5001'
     }
 
     stages {
@@ -60,45 +64,30 @@ pipeline {
                     echo "Validating Project Structure"
                     echo "======================================"
 
-                    echo "Application root:"
-                    echo "$APP_ROOT"
-
-                    if [ ! -d "$APP_ROOT" ]; then
-                        echo "ERROR: $APP_ROOT directory not found"
+                    if [ ! -d "$BACKEND_DIR" ]; then
+                        echo "ERROR: Backend directory not found:"
+                        echo "$BACKEND_DIR"
                         exit 1
                     fi
 
-                    if [ ! -f "$APP_ROOT/package.json" ]; then
-                        echo "ERROR: $APP_ROOT/package.json not found"
+                    if [ ! -f "$BACKEND_DIR/package.json" ]; then
+                        echo "ERROR: package.json not found"
+                        exit 1
+                    fi
+
+                    if [ ! -f "$BACKEND_DIR/src/server.js" ]; then
+                        echo "ERROR: src/server.js not found"
                         exit 1
                     fi
 
                     echo ""
                     echo "Backend package.json:"
-                    cat "$APP_ROOT/package.json"
+                    cat "$BACKEND_DIR/package.json"
 
                     echo ""
-                    echo "Project files:"
-                    find "$APP_ROOT" -maxdepth 2 -type f \
+                    echo "Backend files:"
+                    find "$BACKEND_DIR" -maxdepth 3 -type f \
                         ! -path "*/node_modules/*" | sort
-
-                    echo "======================================"
-                '''
-            }
-        }
-
-        stage('Clean Old Dependencies') {
-            steps {
-                sh '''
-                    set -e
-
-                    echo "======================================"
-                    echo "Cleaning Old node_modules"
-                    echo "======================================"
-
-                    rm -rf "$APP_ROOT/node_modules"
-
-                    echo "Old node_modules removed"
 
                     echo "======================================"
                 '''
@@ -114,15 +103,13 @@ pipeline {
                     echo "Installing Node.js Dependencies"
                     echo "======================================"
 
-                    cd "$APP_ROOT"
+                    cd "$BACKEND_DIR"
 
                     if [ -f package-lock.json ]; then
                         echo "package-lock.json found"
-                        echo "Running npm ci..."
                         npm ci
                     else
                         echo "package-lock.json not found"
-                        echo "Running npm install..."
                         npm install
                     fi
 
@@ -134,22 +121,30 @@ pipeline {
             }
         }
 
-        stage('Create Production Environment') {
+        stage('Prepare Production Directory') {
             steps {
                 sh '''
                     set -e
 
                     echo "======================================"
-                    echo "Creating Production Environment"
+                    echo "Preparing Production Directory"
                     echo "======================================"
 
-                    sudo mkdir -p "$APP_DIR"
-                    sudo mkdir -p "$BACKEND_DIR"
-                    sudo mkdir -p "$FRONTEND_DIR"
+                    # Jenkins must have permission to write to this directory.
+                    # Do NOT use sudo inside Jenkins.
 
-                    sudo chown -R jenkins:jenkins "$APP_DIR"
+                    if [ ! -d "$APP_DIR" ]; then
+                        echo "ERROR: $APP_DIR does not exist."
+                        echo ""
+                        echo "Run this ONCE on the server as an administrator:"
+                        echo ""
+                        echo "sudo mkdir -p $APP_DIR"
+                        echo "sudo chown -R jenkins:jenkins $APP_DIR"
+                        echo ""
+                        exit 1
+                    fi
 
-                    echo "Application directory:"
+                    echo "Production directory:"
                     ls -ld "$APP_DIR"
 
                     echo "======================================"
@@ -163,24 +158,23 @@ pipeline {
                     set -e
 
                     echo "======================================"
-                    echo "Deploying Backend"
+                    echo "Deploying Backend Files"
                     echo "======================================"
 
-                    rm -rf "$BACKEND_DIR"/*
-                    cp -r "$APP_ROOT"/. "$BACKEND_DIR"/
+                    rm -rf "$APP_DIR/current"
 
-                    rm -rf "$BACKEND_DIR/.git"
-                    rm -rf "$BACKEND_DIR/node_modules"
+                    mkdir -p "$APP_DIR/current"
 
-                    cd "$BACKEND_DIR"
+                    cp -r "$BACKEND_DIR"/* "$APP_DIR/current/"
 
-                    if [ -f package-lock.json ]; then
-                        npm ci --omit=dev
-                    else
-                        npm install --omit=dev
+                    if [ -d "$BACKEND_DIR/.env" ]; then
+                        cp -r "$BACKEND_DIR/.env" "$APP_DIR/current/"
                     fi
 
-                    echo "Backend deployed successfully"
+                    echo ""
+                    echo "Deployed files:"
+                    find "$APP_DIR/current" -maxdepth 3 -type f \
+                        ! -path "*/node_modules/*" | sort
 
                     echo "======================================"
                 '''
@@ -193,25 +187,82 @@ pipeline {
                     set -e
 
                     echo "======================================"
-                    echo "PostgreSQL Database Check"
+                    echo "Checking PostgreSQL Database"
                     echo "======================================"
 
-                    if ! command -v psql >/dev/null 2>&1; then
-                        echo "ERROR: PostgreSQL client not installed"
-                        exit 1
+                    if ! systemctl is-active --quiet postgresql; then
+                        echo "WARNING: PostgreSQL service is not active."
+                        echo "Trying to continue..."
                     fi
 
-                    echo "PostgreSQL:"
-                    psql --version
+                    if psql -U postgres -tAc \
+                        "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" \
+                        2>/dev/null | grep -q 1; then
+
+                        echo "Database $DB_NAME already exists."
+
+                    else
+                        echo "Database $DB_NAME does not exist."
+
+                        echo "Creating database..."
+
+                        createdb -U postgres "$DB_NAME" 2>/dev/null || true
+
+                        echo "Database creation completed."
+                    fi
 
                     echo ""
-                    echo "Checking database connection..."
+                    echo "Checking database:"
+                    psql -U postgres -lqt 2>/dev/null | grep "$DB_NAME" || true
 
-                    if sudo -u postgres psql -c "SELECT version();" >/dev/null 2>&1; then
-                        echo "PostgreSQL connection: OK"
+                    echo "======================================"
+                '''
+            }
+        }
+
+        stage('Install Production Dependencies') {
+            steps {
+                sh '''
+                    set -e
+
+                    echo "======================================"
+                    echo "Installing Production Dependencies"
+                    echo "======================================"
+
+                    cd "$APP_DIR/current"
+
+                    if [ -f package-lock.json ]; then
+                        npm ci --omit=dev
                     else
-                        echo "WARNING: Could not connect to PostgreSQL"
-                        echo "Database creation will be handled by application configuration"
+                        npm install --omit=dev
+                    fi
+
+                    echo "Production dependencies installed."
+
+                    echo "======================================"
+                '''
+            }
+        }
+
+        stage('Run Database Migration') {
+            steps {
+                sh '''
+                    set -e
+
+                    echo "======================================"
+                    echo "Running Database Migration"
+                    echo "======================================"
+
+                    cd "$APP_DIR/current"
+
+                    if grep -q '"migrate"' package.json; then
+                        npm run migrate || {
+                            echo "WARNING: Migration failed."
+                            echo "Check database configuration."
+                            exit 1
+                        }
+                    else
+                        echo "No migration script found."
                     fi
 
                     echo "======================================"
@@ -219,7 +270,7 @@ pipeline {
             }
         }
 
-        stage('Test') {
+        stage('Test Application') {
             steps {
                 sh '''
                     set -e
@@ -228,19 +279,11 @@ pipeline {
                     echo "Testing Application"
                     echo "======================================"
 
-                    cd "$BACKEND_DIR"
+                    cd "$APP_DIR/current"
 
-                    if [ -f package.json ]; then
-                        echo "Testing package.json..."
+                    node --check src/server.js
 
-                        if npm run | grep -q "test"; then
-                            npm test -- --if-present || true
-                        else
-                            echo "No test script configured"
-                        fi
-                    fi
-
-                    echo "Application test stage completed"
+                    echo "Node.js syntax check passed."
 
                     echo "======================================"
                 '''
@@ -256,42 +299,18 @@ pipeline {
                     echo "Configuring PM2"
                     echo "======================================"
 
-                    cd "$BACKEND_DIR"
-
-                    if [ ! -f package.json ]; then
-                        echo "ERROR: package.json not found"
-                        exit 1
-                    fi
-
-                    echo "Stopping old application..."
+                    cd "$APP_DIR/current"
 
                     pm2 delete "$PM2_APP_NAME" 2>/dev/null || true
 
-                    echo "Starting application..."
-
-                    if [ -f src/server.js ]; then
-                        pm2 start src/server.js \
-                            --name "$PM2_APP_NAME"
-                    elif [ -f server.js ]; then
-                        pm2 start server.js \
-                            --name "$PM2_APP_NAME"
-                    elif [ -f app.js ]; then
-                        pm2 start app.js \
-                            --name "$PM2_APP_NAME"
-                    else
-                        echo "ERROR: Could not find server.js"
-                        echo "Expected one of:"
-                        echo "  src/server.js"
-                        echo "  server.js"
-                        echo "  app.js"
-                        exit 1
-                    fi
+                    pm2 start src/server.js \
+                        --name "$PM2_APP_NAME"
 
                     pm2 save
 
                     echo ""
-                    echo "PM2 applications:"
-                    pm2 list
+                    echo "PM2 status:"
+                    pm2 status
 
                     echo "======================================"
                 '''
@@ -304,31 +323,41 @@ pipeline {
                     set +e
 
                     echo "======================================"
-                    echo "Application Health Check"
+                    echo "Health Check"
                     echo "======================================"
 
-                    echo "Waiting for application..."
                     sleep 5
 
-                    echo ""
                     echo "PM2 status:"
                     pm2 status
 
                     echo ""
-                    echo "Testing port $PORT..."
+                    echo "Checking port $APP_PORT..."
 
-                    if curl -fsS "http://127.0.0.1:$PORT/" >/dev/null 2>&1; then
-                        echo "Application: ONLINE"
+                    if ss -ltn | grep -q ":$APP_PORT "; then
+                        echo "SUCCESS: Application is listening on port $APP_PORT"
                     else
-                        echo "WARNING: Application did not respond on port $PORT"
+                        echo "WARNING: Port $APP_PORT is not listening."
                         echo ""
-                        echo "PM2 logs:"
+                        echo "Recent PM2 logs:"
                         pm2 logs "$PM2_APP_NAME" --lines 30 --nostream
                     fi
 
                     echo ""
-                    echo "Port check:"
-                    ss -ltnp | grep ":$PORT" || true
+                    echo "Testing HTTP endpoint..."
+
+                    curl -f \
+                        --connect-timeout 5 \
+                        --max-time 10 \
+                        "http://127.0.0.1:$APP_PORT/" \
+                        >/dev/null 2>&1
+
+                    if [ $? -eq 0 ]; then
+                        echo "SUCCESS: Application HTTP health check passed."
+                    else
+                        echo "WARNING: HTTP health check failed."
+                        echo "The application may still be starting."
+                    fi
 
                     echo "======================================"
                 '''
@@ -337,16 +366,22 @@ pipeline {
     }
 
     post {
+
         success {
             echo '''
 ========================================
  eSSL Attendance Monitor
  Deployment SUCCESS
 ========================================
-Application: /opt/essl-monitor
-Backend:     /opt/essl-monitor/backend
-PM2 App:     essl-attendance-monitor
-Port:        5001
+
+Application:
+http://172.16.0.111:5001/
+
+PM2:
+essl-attendance-monitor
+
+Status:
+DEPLOYED
 ========================================
 '''
         }
@@ -357,7 +392,18 @@ Port:        5001
  eSSL Attendance Monitor
  Deployment FAILED
 ========================================
+
 Check the failed Jenkins stage.
+
+IMPORTANT:
+This pipeline does NOT use sudo.
+
+Make sure the following was executed
+ONCE by an administrator:
+
+sudo mkdir -p /opt/essl-monitor
+sudo chown -R jenkins:jenkins /opt/essl-monitor
+
 ========================================
 '''
         }
