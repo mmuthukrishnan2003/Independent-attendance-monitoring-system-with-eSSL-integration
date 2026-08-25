@@ -167,9 +167,7 @@ server {
 }
 EOF
 
-                    echo "Backend Dockerfile created."
-                    echo "Frontend Dockerfile created."
-                    echo "Nginx API reverse proxy created."
+                    echo "Docker files created successfully."
                 '''
             }
         }
@@ -189,9 +187,6 @@ EOF
                     fi
 
                     echo ".env found."
-
-                    echo ""
-                    echo "Checking required variables..."
 
                     missing=0
 
@@ -248,7 +243,7 @@ EOF
                         npm ci
 
                         echo ""
-                        echo "Backend npm dependencies installed successfully."
+                        echo "Backend dependencies installed successfully."
                     '''
                 }
             }
@@ -305,9 +300,9 @@ EOF
                         echo "        DATABASE MIGRATION"
                         echo "=========================================="
 
-                        export $(grep -v '^#' "$ENV_FILE" \
-                            | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' \
-                            | xargs)
+                        set -a
+                        . "$ENV_FILE"
+                        set +a
 
                         npm run migrate
 
@@ -334,7 +329,7 @@ EOF
                         echo "Docker network already exists."
                     fi
 
-                    echo "Docker network ready: $DOCKER_NETWORK"
+                    echo "Docker network ready."
                 '''
             }
         }
@@ -391,7 +386,7 @@ EOF
                     docker rm -f "$BACKEND_CONTAINER" 2>/dev/null || true
                     docker rm -f "$FRONTEND_CONTAINER" 2>/dev/null || true
 
-                    true
+                    sleep 2
                 '''
             }
         }
@@ -406,12 +401,14 @@ EOF
                     echo "=========================================="
 
                     if ss -ltn | grep -q ":${BACKEND_PORT} "; then
-                        echo "Port ${BACKEND_PORT}: already in use"
+                        echo "ERROR: Port ${BACKEND_PORT} is already in use."
+                        ss -ltnp | grep ":${BACKEND_PORT} " || true
                         exit 1
                     fi
 
                     if ss -ltn | grep -q ":${FRONTEND_PORT} "; then
-                        echo "Port ${FRONTEND_PORT}: already in use"
+                        echo "ERROR: Port ${FRONTEND_PORT} is already in use."
+                        ss -ltnp | grep ":${FRONTEND_PORT} " || true
                         exit 1
                     fi
 
@@ -475,14 +472,47 @@ EOF
                     echo "        WAITING FOR CONTAINERS"
                     echo "=========================================="
 
-                    sleep 10
+                    for i in $(seq 1 10); do
 
-                    docker ps \
-                        --filter "name=$BACKEND_CONTAINER" \
-                        --filter "name=$FRONTEND_CONTAINER"
+                        BACKEND_RUNNING=$(docker inspect \
+                            --format='{{.State.Running}}' \
+                            "$BACKEND_CONTAINER" 2>/dev/null || echo false)
 
-                    echo ""
-                    echo "Containers are running."
+                        FRONTEND_RUNNING=$(docker inspect \
+                            --format='{{.State.Running}}' \
+                            "$FRONTEND_CONTAINER" 2>/dev/null || echo false)
+
+                        echo "Attempt $i/10 - Backend: $BACKEND_RUNNING - Frontend: $FRONTEND_RUNNING"
+
+                        if [ "$BACKEND_RUNNING" = "true" ] && \
+                           [ "$FRONTEND_RUNNING" = "true" ]; then
+                            echo ""
+                            echo "Both containers are running."
+                            break
+                        fi
+
+                        sleep 2
+                    done
+
+                    BACKEND_RUNNING=$(docker inspect \
+                        --format='{{.State.Running}}' \
+                        "$BACKEND_CONTAINER")
+
+                    FRONTEND_RUNNING=$(docker inspect \
+                        --format='{{.State.Running}}' \
+                        "$FRONTEND_CONTAINER")
+
+                    if [ "$BACKEND_RUNNING" != "true" ]; then
+                        echo "ERROR: Backend container is not running."
+                        docker logs "$BACKEND_CONTAINER" --tail 100
+                        exit 1
+                    fi
+
+                    if [ "$FRONTEND_RUNNING" != "true" ]; then
+                        echo "ERROR: Frontend container is not running."
+                        docker logs "$FRONTEND_CONTAINER" --tail 100
+                        exit 1
+                    fi
                 '''
             }
         }
@@ -498,29 +528,49 @@ EOF
 
                     SUCCESS=0
 
-                    for i in $(seq 1 10); do
+                    for i in $(seq 1 15); do
 
                         HTTP_CODE=$(curl -sS \
                             -o /tmp/backend-health.json \
                             -w "%{http_code}" \
+                            --connect-timeout 2 \
                             --max-time 5 \
                             http://127.0.0.1:5001/api/ || true)
 
-                        echo "Backend HTTP status: $HTTP_CODE"
+                        echo "Attempt $i/15 - Backend HTTP status: $HTTP_CODE"
 
-                        # 200 = normal success
-                        # 401 = backend is alive but authentication is required
-                        if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "401" ]; then
+                        case "$HTTP_CODE" in
+                            200)
+                                echo "Backend returned HTTP 200."
+                                SUCCESS=1
+                                break
+                                ;;
 
-                            echo "Backend is healthy."
+                            401)
+                                echo "Backend returned HTTP 401."
+                                echo "Authentication is required, but the backend is alive."
+                                SUCCESS=1
+                                break
+                                ;;
 
-                            cat /tmp/backend-health.json
+                            403)
+                                echo "Backend returned HTTP 403."
+                                echo "Backend is responding, but access is forbidden."
+                                SUCCESS=1
+                                break
+                                ;;
 
-                            SUCCESS=1
-                            break
-                        fi
+                            404)
+                                echo "Backend returned HTTP 404."
+                                echo "Server is responding, but /api/ route may not exist."
+                                SUCCESS=1
+                                break
+                                ;;
 
-                        echo "Backend not ready yet. Attempt $i/10"
+                            *)
+                                echo "Backend not ready yet."
+                                ;;
+                        esac
 
                         sleep 3
                     done
@@ -531,7 +581,7 @@ EOF
                         echo "ERROR: Backend health check failed."
 
                         echo ""
-                        echo "Backend container status:"
+                        echo "Container status:"
                         docker ps -a \
                             --filter "name=$BACKEND_CONTAINER"
 
@@ -544,6 +594,10 @@ EOF
 
                     echo ""
                     echo "Backend health check: OK"
+
+                    echo ""
+                    echo "Backend response:"
+                    cat /tmp/backend-health.json || true
                 '''
             }
         }
@@ -559,20 +613,27 @@ EOF
 
                     SUCCESS=0
 
-                    for i in $(seq 1 10); do
+                    for i in $(seq 1 15); do
 
-                        if curl -fsS \
+                        HTTP_CODE=$(curl -sS \
+                            -o /tmp/frontend-health.html \
+                            -w "%{http_code}" \
+                            --connect-timeout 2 \
                             --max-time 5 \
-                            http://127.0.0.1:8081/ \
-                            >/tmp/frontend-health.html 2>/dev/null; then
+                            http://127.0.0.1:8081/ || true)
 
-                            echo "Frontend is healthy."
+                        echo "Attempt $i/15 - Frontend HTTP status: $HTTP_CODE"
 
-                            SUCCESS=1
-                            break
-                        fi
-
-                        echo "Frontend not ready yet. Attempt $i/10"
+                        case "$HTTP_CODE" in
+                            200|301|302)
+                                echo "Frontend is healthy."
+                                SUCCESS=1
+                                break
+                                ;;
+                            *)
+                                echo "Frontend not ready yet."
+                                ;;
+                        esac
 
                         sleep 2
                     done
@@ -604,24 +665,55 @@ EOF
                     echo "        API PROXY CHECK"
                     echo "=========================================="
 
-                    HTTP_CODE=$(curl -sS \
-                        -o /tmp/api-proxy.json \
-                        -w "%{http_code}" \
-                        --max-time 5 \
-                        http://127.0.0.1:8081/api/ || true)
+                    SUCCESS=0
 
-                    echo "API proxy HTTP status: $HTTP_CODE"
+                    for i in $(seq 1 10); do
 
-                    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "401" ]; then
-                        echo "API reverse proxy: OK"
-                        cat /tmp/api-proxy.json
-                    else
+                        HTTP_CODE=$(curl -sS \
+                            -o /tmp/api-proxy.json \
+                            -w "%{http_code}" \
+                            --connect-timeout 2 \
+                            --max-time 5 \
+                            http://127.0.0.1:8081/api/ || true)
+
+                        echo "Attempt $i/10 - API proxy HTTP status: $HTTP_CODE"
+
+                        case "$HTTP_CODE" in
+                            200|401|403|404)
+                                echo "Nginx API proxy is responding."
+                                SUCCESS=1
+                                break
+                                ;;
+                            *)
+                                echo "API proxy not ready yet."
+                                ;;
+                        esac
+
+                        sleep 2
+                    done
+
+                    if [ "$SUCCESS" -ne 1 ]; then
+
+                        echo ""
                         echo "ERROR: API reverse proxy failed."
 
+                        echo ""
+                        echo "Frontend logs:"
                         docker logs "$FRONTEND_CONTAINER" --tail 100
+
+                        echo ""
+                        echo "Backend logs:"
+                        docker logs "$BACKEND_CONTAINER" --tail 100
 
                         exit 1
                     fi
+
+                    echo ""
+                    echo "API reverse proxy: OK"
+
+                    echo ""
+                    echo "API response:"
+                    cat /tmp/api-proxy.json || true
                 '''
             }
         }
@@ -642,14 +734,22 @@ EOF
                     echo ""
                     echo "Backend:"
                     docker inspect \
-                        --format='{{.State.Status}}' \
+                        --format='Status={{.State.Status}} Running={{.State.Running}}' \
                         "$BACKEND_CONTAINER"
 
                     echo ""
                     echo "Frontend:"
                     docker inspect \
-                        --format='{{.State.Status}}' \
+                        --format='Status={{.State.Status}} Running={{.State.Running}}' \
                         "$FRONTEND_CONTAINER"
+
+                    echo ""
+                    echo "Docker network:"
+                    docker network inspect "$DOCKER_NETWORK" \
+                        --format='{{range .Containers}}{{.Name}} {{end}}'
+
+                    echo ""
+                    echo "Container status: OK"
                 '''
             }
         }
@@ -667,12 +767,12 @@ EOF
                     echo "eSSL Attendance Monitor"
 
                     echo ""
-                    echo "Backend:"
-                    echo "http://172.16.0.111:5001"
+                    echo "Dashboard:"
+                    echo "http://172.16.0.111:8081"
 
                     echo ""
-                    echo "Frontend:"
-                    echo "http://172.16.0.111:8081"
+                    echo "Backend:"
+                    echo "http://172.16.0.111:5001"
 
                     echo ""
                     echo "API:"
@@ -711,9 +811,14 @@ EOF
                 echo "http://172.16.0.111:8081"
 
                 echo ""
+                echo "Backend:"
+                echo "http://172.16.0.111:5001"
+
+                echo ""
                 echo "API:"
                 echo "http://172.16.0.111:5001/api"
 
+                echo ""
                 echo "===================================================="
             '''
         }
