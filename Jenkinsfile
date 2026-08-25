@@ -6,10 +6,6 @@ pipeline {
         APP_DIR = '/opt/essl-monitor'
         BACKEND_DIR = '/opt/essl-monitor/backend'
         APP_PORT = '5001'
-
-        PGHOST = '172.16.0.111'
-        PGUSER = 'postgres'
-        PGDATABASE = 'essl_monitor'
     }
 
     stages {
@@ -24,6 +20,10 @@ pipeline {
         stage('Environment Check') {
             steps {
                 sh '''
+                    echo "=============================="
+                    echo "Environment"
+                    echo "=============================="
+
                     echo "Node:"
                     node -v
 
@@ -37,7 +37,7 @@ pipeline {
                     psql --version
 
                     echo "PM2:"
-                    pm2 -v || true
+                    pm2 -v
                 '''
             }
         }
@@ -45,11 +45,12 @@ pipeline {
         stage('Create Application Directory') {
             steps {
                 sh '''
-                    sudo mkdir -p ${APP_DIR}
-                    sudo mkdir -p ${APP_DIR}/backend
-                    sudo mkdir -p ${APP_DIR}/frontend
+                    mkdir -p ${APP_DIR}
+                    mkdir -p ${APP_DIR}/backend
+                    mkdir -p ${APP_DIR}/frontend
 
-                    sudo chown -R jenkins:jenkins ${APP_DIR}
+                    echo "Application directory:"
+                    ls -ld ${APP_DIR}
                 '''
             }
         }
@@ -58,11 +59,13 @@ pipeline {
             steps {
                 dir('backend') {
                     sh '''
+                        echo "Installing backend dependencies..."
+
                         if [ -f package-lock.json ]; then
                             npm ci
                         else
-                            echo "package-lock.json not found"
-                            echo "Creating package-lock.json..."
+                            echo "package-lock.json not found."
+                            echo "Running npm install..."
                             npm install
                         fi
                     '''
@@ -99,16 +102,11 @@ JWT_SECRET=${JWT_SECRET}
 
 OFFICE_START_TIME=09:00
 LATE_GRACE_MINUTES=10
-
-SMTP_HOST=
-SMTP_PORT=587
-SMTP_USER=
-SMTP_PASS=
-MAIL_FROM=
-DAILY_REPORT_RECIPIENTS=
 EOF
 
                         chmod 600 backend/.env
+
+                        echo "Production environment created."
                     '''
                 }
             }
@@ -125,17 +123,23 @@ EOF
                     sh '''
                         export PGPASSWORD="${POSTGRES_PASSWORD}"
 
-                        psql \
+                        DATABASE_EXISTS=$(psql \
                             -h 172.16.0.111 \
                             -U postgres \
                             -d postgres \
-                            -tc "SELECT 1 FROM pg_database WHERE datname='essl_monitor'" \
-                            | grep -q 1 \
-                            || psql \
+                            -tAc "SELECT 1 FROM pg_database WHERE datname='essl_monitor'")
+
+                        if [ "$DATABASE_EXISTS" = "1" ]; then
+                            echo "Database essl_monitor already exists."
+                        else
+                            echo "Creating database essl_monitor..."
+
+                            psql \
                                 -h 172.16.0.111 \
                                 -U postgres \
                                 -d postgres \
                                 -c "CREATE DATABASE essl_monitor"
+                        fi
                     '''
                 }
             }
@@ -145,6 +149,7 @@ EOF
             steps {
                 dir('backend') {
                     sh '''
+                        echo "Running database migration..."
                         npm run migrate
                     '''
                 }
@@ -158,7 +163,7 @@ EOF
                         if npm run | grep -q "test"; then
                             npm test
                         else
-                            echo "No test script configured"
+                            echo "No test script configured."
                         fi
                     '''
                 }
@@ -168,6 +173,8 @@ EOF
         stage('Deploy Application') {
             steps {
                 sh '''
+                    echo "Deploying application..."
+
                     rsync -av \
                         --delete \
                         --exclude='.git' \
@@ -182,6 +189,8 @@ EOF
                     else
                         npm install --omit=dev
                     fi
+
+                    echo "Application deployed."
                 '''
             }
         }
@@ -189,16 +198,20 @@ EOF
         stage('Configure PM2') {
             steps {
                 sh '''
+                    cd ${BACKEND_DIR}
+
                     if pm2 describe ${APP_NAME} > /dev/null 2>&1; then
+                        echo "Restarting existing application..."
                         pm2 restart ${APP_NAME}
                     else
-                        cd ${BACKEND_DIR}
-
-                        pm2 start src/server.js \
-                            --name ${APP_NAME}
+                        echo "Starting application..."
+                        pm2 start src/server.js --name ${APP_NAME}
                     fi
 
                     pm2 save
+
+                    echo "PM2 status:"
+                    pm2 status
                 '''
             }
         }
@@ -217,6 +230,7 @@ EOF
                     echo "======================================"
                     echo "Dashboard:"
                     echo "http://172.16.0.111:${APP_PORT}/"
+                    echo "======================================"
                 '''
             }
         }
@@ -224,7 +238,7 @@ EOF
 
     post {
         success {
-            echo 'Deployment completed successfully.'
+            echo 'eSSL Monitor deployment completed successfully.'
         }
 
         failure {
