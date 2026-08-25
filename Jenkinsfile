@@ -1,4 +1,115 @@
-```groovy
+````bash
+#!/bin/bash
+
+set -e
+
+echo "=============================================="
+echo "   eSSL ATTENDANCE JENKINS AUTO SETUP"
+echo "=============================================="
+
+APP_ROOT="/opt/essl-monitor"
+JENKINSFILE="/tmp/Jenkinsfile"
+
+echo ""
+echo "1. Installing required packages..."
+
+sudo apt-get update
+
+sudo apt-get install -y \
+    git \
+    curl \
+    ca-certificates \
+    postgresql-client
+
+echo ""
+echo "2. Checking Node.js..."
+
+if ! command -v node >/dev/null 2>&1; then
+
+    echo "Node.js not found. Installing Node.js 20..."
+
+    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+    sudo apt-get install -y nodejs
+
+else
+
+    echo "Node.js already installed:"
+    node -v
+
+fi
+
+echo ""
+echo "Node:"
+node -v
+
+echo "NPM:"
+npm -v
+
+
+echo ""
+echo "3. Installing PM2..."
+
+if ! command -v pm2 >/dev/null 2>&1; then
+
+    sudo npm install -g pm2
+
+else
+
+    echo "PM2 already installed:"
+    pm2 -v
+
+fi
+
+echo ""
+echo "PM2:"
+pm2 -v
+
+
+echo ""
+echo "4. Creating application directory..."
+
+sudo mkdir -p "$APP_ROOT"
+sudo mkdir -p "$APP_ROOT/backup"
+sudo mkdir -p "$APP_ROOT/previous"
+
+sudo chown -R jenkins:jenkins "$APP_ROOT"
+
+echo "Application directory:"
+echo "$APP_ROOT"
+
+
+echo ""
+echo "5. Creating .env if it does not exist..."
+
+if [ ! -f "$APP_ROOT/.env" ]; then
+
+    sudo tee "$APP_ROOT/.env" > /dev/null <<'ENVFILE'
+DB_HOST=127.0.0.1
+DB_PORT=5432
+DB_NAME=essl_attendance
+DB_USER=postgres
+DB_PASSWORD=demo
+
+PORT=5001
+HOST=0.0.0.0
+ENVFILE
+
+    sudo chown jenkins:jenkins "$APP_ROOT/.env"
+    sudo chmod 600 "$APP_ROOT/.env"
+
+    echo ".env created."
+
+else
+
+    echo ".env already exists. Keeping existing configuration."
+
+fi
+
+
+echo ""
+echo "6. Creating Jenkinsfile..."
+
+cat > "$JENKINSFILE" <<'JENKINSFILE'
 pipeline {
 
     agent any
@@ -48,8 +159,6 @@ pipeline {
 
                     echo "PM2:"
                     pm2 -v
-
-                    echo "=========================================="
                 '''
             }
         }
@@ -69,7 +178,6 @@ pipeline {
                     test -f essl-monitor/backend/src/server.js
                     test -f essl-monitor/backend/src/db/migrate.js
 
-                    echo "Migration file found."
                     echo "Project structure OK"
                 '''
             }
@@ -177,17 +285,17 @@ pipeline {
 
                         BACKUP_NAME="$APP_ROOT/backup/backup-$(date +%Y%m%d-%H%M%S)"
 
-                        echo "Creating application backup:"
-                        echo "$BACKUP_NAME"
-
                         mkdir -p "$BACKUP_NAME"
 
                         cp -a "$APP_CURRENT"/. "$BACKUP_NAME"/
 
-                        echo "Application backup created"
+                        echo "Backup created:"
+                        echo "$BACKUP_NAME"
 
                     else
-                        echo "No existing deployment found."
+
+                        echo "No previous deployment found."
+
                     fi
                 '''
             }
@@ -205,6 +313,7 @@ pipeline {
                     TEMP_DIR="$APP_ROOT/deploy-${BUILD_NUMBER}"
 
                     rm -rf "$TEMP_DIR"
+
                     mkdir -p "$TEMP_DIR"
 
                     cp essl-monitor/backend/package.json "$TEMP_DIR/"
@@ -214,21 +323,21 @@ pipeline {
 
                     cp "$APP_ROOT/.env" "$TEMP_DIR/.env"
 
-                    echo "Installing production dependencies..."
-
                     cd "$TEMP_DIR"
+
+                    echo "Installing production dependencies..."
 
                     npm ci --omit=dev
 
-                    echo "Production dependencies installed"
+                    echo "Production dependencies installed."
 
-                    echo "Deployment directory prepared:"
+                    echo "Deployment directory:"
                     echo "$TEMP_DIR"
                 '''
             }
         }
 
-        stage('Verify Deployment Environment') {
+        stage('Verify Deployment') {
             steps {
                 sh '''
                     set -eu
@@ -239,15 +348,18 @@ pipeline {
 
                     TEMP_DIR="$APP_ROOT/deploy-${BUILD_NUMBER}"
 
-                    cd "$TEMP_DIR"
+                    test -f "$TEMP_DIR/package.json"
+                    test -f "$TEMP_DIR/package-lock.json"
+                    test -f "$TEMP_DIR/src/server.js"
+                    test -f "$TEMP_DIR/src/db/migrate.js"
+                    test -f "$TEMP_DIR/.env"
 
-                    test -f package.json
-                    test -f package-lock.json
-                    test -f src/server.js
-                    test -f src/db/migrate.js
-                    test -f .env
+                    echo "Application files verified."
 
-                    echo "Application files verified"
+                    node --check "$TEMP_DIR/src/server.js"
+                    node --check "$TEMP_DIR/src/db/migrate.js"
+
+                    echo "Application syntax OK."
                 '''
             }
         }
@@ -289,38 +401,9 @@ pipeline {
                     export PGUSER="$DB_USER"
                     export PGPASSWORD="$DB_PASSWORD"
 
-                    echo "Database:"
-                    echo "  Host: $DB_HOST"
-                    echo "  Port: $DB_PORT"
-                    echo "  Name: $DB_NAME"
-                    echo "  User: $DB_USER"
-
-                    echo ""
-                    echo "Running database migration..."
-
                     node src/db/migrate.js
 
-                    echo ""
                     echo "Database migration completed successfully."
-                '''
-            }
-        }
-
-        stage('Application Syntax Test') {
-            steps {
-                sh '''
-                    set -eu
-
-                    echo "=========================================="
-                    echo "        APPLICATION TEST"
-                    echo "=========================================="
-
-                    TEMP_DIR="$APP_ROOT/deploy-${BUILD_NUMBER}"
-
-                    node --check "$TEMP_DIR/src/server.js"
-                    node --check "$TEMP_DIR/src/db/migrate.js"
-
-                    echo "Application syntax OK"
                 '''
             }
         }
@@ -336,30 +419,25 @@ pipeline {
 
                     TEMP_DIR="$APP_ROOT/deploy-${BUILD_NUMBER}"
 
-                    if [ ! -d "$TEMP_DIR" ]; then
-                        echo "ERROR: Deployment directory not found"
-                        exit 1
-                    fi
+                    test -d "$TEMP_DIR"
 
-                    echo "Stopping previous PM2 application..."
+                    echo "Stopping previous PM2 process..."
 
                     pm2 delete "$APP_NAME" 2>/dev/null || true
 
-                    echo "Replacing current application..."
+                    echo "Removing old previous backup..."
+
+                    rm -rf "$APP_ROOT/previous"
 
                     if [ -d "$APP_CURRENT" ]; then
-                        rm -rf "$APP_ROOT/previous"
                         mv "$APP_CURRENT" "$APP_ROOT/previous"
                     fi
 
                     mv "$TEMP_DIR" "$APP_CURRENT"
 
-                    echo "Application deployed to:"
-                    echo "$APP_CURRENT"
-
                     cd "$APP_CURRENT"
 
-                    echo "Starting application with PM2..."
+                    echo "Starting application..."
 
                     pm2 start src/server.js \
                         --name "$APP_NAME" \
@@ -367,13 +445,12 @@ pipeline {
                         --time \
                         --update-env
 
-                    echo ""
-                    echo "PM2 process started"
-
                     pm2 save
 
                     echo ""
-                    echo "PM2 application started"
+                    echo "Application started."
+
+                    pm2 status
                 '''
             }
         }
@@ -404,7 +481,10 @@ pipeline {
                         process.stdin.on("end", () => {
                             try {
                                 const data = JSON.parse(input);
-                                const app = data.find(x => x.name === process.argv[1]);
+
+                                const app = data.find(
+                                    x => x.name === process.argv[1]
+                                );
 
                                 if (!app) {
                                     console.log("NOT_FOUND");
@@ -424,10 +504,13 @@ pipeline {
 
                         echo ""
                         echo "ERROR: PM2 application is NOT online."
-                        echo ""
 
+                        echo ""
                         echo "Last application logs:"
-                        pm2 logs "$APP_NAME" --lines 50 --nostream || true
+
+                        pm2 logs "$APP_NAME" \
+                            --lines 50 \
+                            --nostream || true
 
                         exit 1
                     fi
@@ -464,25 +547,33 @@ pipeline {
                             ;;
 
                         5*)
-                            echo "ERROR: Application returned server error HTTP $HTTP_CODE"
-                            echo ""
-                            echo "Last application logs:"
-                            pm2 logs "$APP_NAME" --lines 50 --nostream || true
+                            echo "ERROR: Application returned server error."
+                            echo "HTTP $HTTP_CODE"
+
+                            pm2 logs "$APP_NAME" \
+                                --lines 50 \
+                                --nostream || true
+
                             exit 1
                             ;;
 
                         000)
                             echo "ERROR: Could not connect to application."
-                            echo ""
-                            echo "Last application logs:"
-                            pm2 logs "$APP_NAME" --lines 50 --nostream || true
+
+                            pm2 logs "$APP_NAME" \
+                                --lines 50 \
+                                --nostream || true
+
                             exit 1
                             ;;
 
                         *)
-                            echo "ERROR: Unexpected HTTP response: $HTTP_CODE"
+                            echo "ERROR: Unexpected HTTP response."
+                            echo "$HTTP_CODE"
+
                             exit 1
                             ;;
+
                     esac
 
                     echo ""
@@ -504,7 +595,7 @@ pipeline {
                     echo "Application : $APP_NAME"
                     echo "Directory   : $APP_CURRENT"
                     echo "Port        : $APP_PORT"
-                    echo "URL         : http://172.16.0.111:$APP_PORT"
+                    echo "Dashboard   : http://172.16.0.111:$APP_PORT"
 
                     echo ""
                     echo "PM2 status:"
@@ -532,6 +623,7 @@ http://172.16.0.111:5001
         }
 
         failure {
+
             sh '''
                 echo ""
                 echo "=========================================="
@@ -544,7 +636,10 @@ http://172.16.0.111:5001
 
                 echo ""
                 echo "Application logs:"
-                pm2 logs "$APP_NAME" --lines 50 --nostream || true
+
+                pm2 logs "$APP_NAME" \
+                    --lines 50 \
+                    --nostream || true
             '''
 
             echo '''
@@ -556,11 +651,101 @@ http://172.16.0.111:5001
         }
 
         always {
-            sh '''
-                echo ""
-                echo "Jenkins deployment process completed."
-            '''
+            echo "Jenkins deployment process completed."
         }
     }
 }
-```
+JENKINSFILE
+
+echo ""
+echo "7. Validating Jenkinsfile..."
+
+if grep -q '^```' "$JENKINSFILE"; then
+    echo "ERROR: Markdown code fences detected."
+    exit 1
+fi
+
+if ! grep -q '^pipeline {' "$JENKINSFILE"; then
+    echo "ERROR: Jenkinsfile does not start correctly."
+    exit 1
+fi
+
+echo "Jenkinsfile syntax header looks correct."
+
+
+echo ""
+echo "8. Copying Jenkinsfile to project..."
+
+if [ -d "$HOME/Independent-attendance-monitoring-system-with-eSSL-integration" ]; then
+
+    cp "$JENKINSFILE" \
+        "$HOME/Independent-attendance-monitoring-system-with-eSSL-integration/Jenkinsfile"
+
+    echo "Jenkinsfile copied to project."
+
+elif [ -d "$HOME/Independent attendance monitoring system with eSSL integration" ]; then
+
+    cp "$JENKINSFILE" \
+        "$HOME/Independent attendance monitoring system with eSSL integration/Jenkinsfile"
+
+    echo "Jenkinsfile copied to project."
+
+else
+
+    echo ""
+    echo "Project directory was not found automatically."
+    echo ""
+    echo "Generated Jenkinsfile is available at:"
+    echo "$JENKINSFILE"
+
+fi
+
+
+echo ""
+echo "9. Preparing PM2 startup..."
+
+sudo env PATH="$PATH:/usr/bin" pm2 startup systemd -u jenkins --hp /var/lib/jenkins 2>/dev/null || true
+
+sudo -u jenkins pm2 save 2>/dev/null || true
+
+
+echo ""
+echo "=============================================="
+echo "             SETUP COMPLETED"
+echo "=============================================="
+
+echo ""
+echo "Node:"
+node -v
+
+echo ""
+echo "NPM:"
+npm -v
+
+echo ""
+echo "PM2:"
+pm2 -v
+
+echo ""
+echo "Application directory:"
+echo "$APP_ROOT"
+
+echo ""
+echo "Environment file:"
+echo "$APP_ROOT/.env"
+
+echo ""
+echo "Generated Jenkinsfile:"
+echo "$JENKINSFILE"
+
+echo ""
+echo "Dashboard URL:"
+echo "http://172.16.0.111:5001"
+
+echo ""
+echo "Jenkins URL:"
+echo "http://172.16.0.111:8080"
+
+echo ""
+echo "=============================================="
+````
