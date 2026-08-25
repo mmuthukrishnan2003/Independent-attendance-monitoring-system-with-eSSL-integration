@@ -1,3 +1,4 @@
+```groovy
 pipeline {
 
     agent any
@@ -5,22 +6,26 @@ pipeline {
     options {
         timestamps()
         disableConcurrentBuilds()
-        buildDiscarder(logRotator(
-            numToKeepStr: '10',
-            artifactNumToKeepStr: '5'
-        ))
+
+        buildDiscarder(
+            logRotator(
+                numToKeepStr: '10',
+                artifactNumToKeepStr: '5'
+            )
+        )
     }
 
     environment {
-        APP_NAME = 'essl-monitor'
-        APP_DIR = '/opt/essl-monitor'
-        DEPLOY_DIR = '/opt/essl-monitor/current'
-        BACKUP_DIR = '/opt/essl-monitor/backup'
+        APP_NAME    = 'essl-monitor'
+
+        APP_DIR     = '/opt/essl-monitor'
+        DEPLOY_DIR  = '/opt/essl-monitor/current'
+        BACKUP_DIR  = '/opt/essl-monitor/backup'
 
         PROJECT_DIR = 'essl-monitor/backend'
 
-        PORT = '5001'
-        HOST = '127.0.0.1'
+        HOST        = '127.0.0.1'
+        PORT        = '5001'
 
         GIT_BRANCH_NAME = 'main'
     }
@@ -39,25 +44,36 @@ pipeline {
                     echo "Jenkins user:"
                     whoami
 
+                    echo ""
+                    echo "Server:"
+                    hostname -I
+
+                    echo ""
                     echo "Node:"
                     node -v
 
+                    echo ""
                     echo "NPM:"
                     npm -v
 
+                    echo ""
                     echo "Git:"
                     git --version
 
+                    echo ""
                     echo "PostgreSQL:"
                     psql --version
 
+                    echo ""
                     echo "PM2:"
                     pm2 -v
 
+                    echo ""
                     echo "=========================================="
                 '''
             }
         }
+
 
         stage('Validate Project') {
             steps {
@@ -68,22 +84,31 @@ pipeline {
                     echo "        VALIDATING PROJECT"
                     echo "=========================================="
 
+                    echo "Project directory:"
+                    pwd
+
+                    echo ""
+                    echo "Checking:"
+                    echo "${PROJECT_DIR}"
+
                     test -d "${PROJECT_DIR}"
                     test -f "${PROJECT_DIR}/package.json"
                     test -f "${PROJECT_DIR}/package-lock.json"
                     test -f "${PROJECT_DIR}/src/server.js"
 
-                    if [ ! -f "${PROJECT_DIR}/src/db/migrate.js" ]; then
+                    if [ -f "${PROJECT_DIR}/src/db/migrate.js" ]; then
+                        echo "Migration file found."
+                    else
                         echo "WARNING: migrate.js not found."
                         echo "Database migration will be skipped."
-                    else
-                        echo "Migration file found."
                     fi
 
+                    echo ""
                     echo "Project structure OK"
                 '''
             }
         }
+
 
         stage('Check Server Environment') {
             steps {
@@ -103,7 +128,6 @@ pipeline {
 
                     echo ".env found"
 
-                    # Load environment without printing password
                     set -a
                     . "${APP_DIR}/.env"
                     set +a
@@ -114,16 +138,20 @@ pipeline {
                     : "${DB_USER:?DB_USER missing}"
                     : "${DB_PASSWORD:?DB_PASSWORD missing}"
 
-                    echo "Database host: ${DB_HOST}"
-                    echo "Database port: ${DB_PORT}"
-                    echo "Database name: ${DB_NAME}"
-                    echo "Database user: ${DB_USER}"
-                    echo "Database password: configured"
+                    echo ""
+                    echo "Database configuration:"
+                    echo "Host     : ${DB_HOST}"
+                    echo "Port     : ${DB_PORT}"
+                    echo "Database : ${DB_NAME}"
+                    echo "User     : ${DB_USER}"
+                    echo "Password : configured"
 
+                    echo ""
                     echo "Server configuration OK"
                 '''
             }
         }
+
 
         stage('Install Dependencies') {
             steps {
@@ -137,11 +165,13 @@ pipeline {
 
                         npm ci
 
+                        echo ""
                         echo "Dependencies installed successfully"
                     '''
                 }
             }
         }
+
 
         stage('Test PostgreSQL') {
             steps {
@@ -156,6 +186,12 @@ pipeline {
                     . "${APP_DIR}/.env"
                     set +a
 
+                    echo "Testing PostgreSQL:"
+                    echo "Host     : ${DB_HOST}"
+                    echo "Port     : ${DB_PORT}"
+                    echo "Database : ${DB_NAME}"
+                    echo "User     : ${DB_USER}"
+
                     PGPASSWORD="${DB_PASSWORD}" psql \
                         -h "${DB_HOST}" \
                         -p "${DB_PORT}" \
@@ -163,10 +199,12 @@ pipeline {
                         -d "${DB_NAME}" \
                         -c "SELECT current_database(), current_user;"
 
+                    echo ""
                     echo "PostgreSQL connection successful"
                 '''
             }
         }
+
 
         stage('Prepare Backup') {
             steps {
@@ -199,6 +237,7 @@ pipeline {
             }
         }
 
+
         stage('Prepare Deployment') {
             steps {
                 sh '''
@@ -213,31 +252,35 @@ pipeline {
                     rm -rf "${TEMP_DIR}"
                     mkdir -p "${TEMP_DIR}"
 
-                    cp "${PROJECT_DIR}/package.json" \
-                       "${TEMP_DIR}/"
+                    echo "Copying package.json..."
+                    cp "${PROJECT_DIR}/package.json" "${TEMP_DIR}/"
 
-                    cp "${PROJECT_DIR}/package-lock.json" \
-                       "${TEMP_DIR}/"
+                    echo "Copying package-lock.json..."
+                    cp "${PROJECT_DIR}/package-lock.json" "${TEMP_DIR}/"
 
-                    cp -r "${PROJECT_DIR}/src" \
-                       "${TEMP_DIR}/"
+                    echo "Copying source code..."
+                    cp -r "${PROJECT_DIR}/src" "${TEMP_DIR}/"
 
-                    cp "${APP_DIR}/.env" \
-                       "${TEMP_DIR}/.env"
-
-                    echo "Installing production dependencies..."
+                    echo "Copying environment configuration..."
+                    cp "${APP_DIR}/.env" "${TEMP_DIR}/.env"
 
                     cd "${TEMP_DIR}"
 
+                    echo ""
+                    echo "Installing production dependencies..."
+
                     npm ci --omit=dev
 
+                    echo ""
                     echo "Production dependencies installed"
 
-                    echo "Deployment directory prepared:"
+                    echo ""
+                    echo "Deployment directory:"
                     echo "${TEMP_DIR}"
                 '''
             }
         }
+
 
         stage('Verify Deployment Environment') {
             steps {
@@ -257,10 +300,12 @@ pipeline {
                     test -f src/server.js
                     test -f .env
 
+                    echo ""
                     echo "Application files verified"
                 '''
             }
         }
+
 
         stage('Database Migration') {
             steps {
@@ -281,15 +326,9 @@ pipeline {
                         exit 0
                     fi
 
-                    # Load server environment
                     set -a
                     . "${APP_DIR}/.env"
                     set +a
-
-                    # IMPORTANT:
-                    # Export both common naming formats.
-                    # This protects the migration script if it uses
-                    # DATABASE_* instead of DB_* variables.
 
                     export DB_HOST="${DB_HOST}"
                     export DB_PORT="${DB_PORT}"
@@ -309,15 +348,13 @@ pipeline {
                     export PGUSER="${DB_USER}"
                     export PGPASSWORD="${DB_PASSWORD}"
 
-                    # Also provide DATABASE_URL for applications
-                    # that use PostgreSQL connection strings.
                     export DATABASE_URL="postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
 
                     echo "Database:"
-                    echo "  Host: ${DB_HOST}"
-                    echo "  Port: ${DB_PORT}"
-                    echo "  Name: ${DB_NAME}"
-                    echo "  User: ${DB_USER}"
+                    echo "Host: ${DB_HOST}"
+                    echo "Port: ${DB_PORT}"
+                    echo "Name: ${DB_NAME}"
+                    echo "User: ${DB_USER}"
 
                     echo ""
                     echo "Running database migration..."
@@ -330,13 +367,14 @@ pipeline {
             }
         }
 
+
         stage('Application Syntax Test') {
             steps {
                 sh '''
                     set -eu
 
                     echo "=========================================="
-                    echo "        APPLICATION TEST"
+                    echo "        APPLICATION SYNTAX TEST"
                     echo "=========================================="
 
                     TEMP_DIR="${APP_DIR}/deploy-${BUILD_NUMBER}"
@@ -347,10 +385,12 @@ pipeline {
                         node --check "${TEMP_DIR}/src/db/migrate.js"
                     fi
 
+                    echo ""
                     echo "Application syntax OK"
                 '''
             }
         }
+
 
         stage('Deploy Application') {
             steps {
@@ -363,20 +403,27 @@ pipeline {
 
                     TEMP_DIR="${APP_DIR}/deploy-${BUILD_NUMBER}"
 
-                    # Stop previous PM2 application if running
+                    echo "Stopping previous PM2 application..."
+
                     pm2 delete "${APP_NAME}" 2>/dev/null || true
 
-                    # Replace current deployment
+                    echo "Removing old deployment..."
+
                     rm -rf "${DEPLOY_DIR}"
+
+                    echo "Moving new deployment..."
 
                     mv "${TEMP_DIR}" "${DEPLOY_DIR}"
 
+                    echo ""
                     echo "Application deployed to:"
                     echo "${DEPLOY_DIR}"
 
                     cd "${DEPLOY_DIR}"
 
-                    # Start application using PM2
+                    echo ""
+                    echo "Starting application with PM2..."
+
                     pm2 start src/server.js \
                         --name "${APP_NAME}" \
                         --time \
@@ -384,10 +431,12 @@ pipeline {
 
                     pm2 save
 
+                    echo ""
                     echo "PM2 application started"
                 '''
             }
         }
+
 
         stage('Health Check') {
             steps {
@@ -404,7 +453,8 @@ pipeline {
                     pm2 status
 
                     echo ""
-                    echo "Checking application port ${PORT}..."
+                    echo "Checking application:"
+                    echo "http://${HOST}:${PORT}/"
 
                     if curl -fsS \
                         --connect-timeout 5 \
@@ -412,21 +462,27 @@ pipeline {
                         "http://${HOST}:${PORT}/" \
                         > /tmp/essl-health-response.txt; then
 
+                        echo ""
                         echo "Application health check PASSED"
 
                     else
 
+                        echo ""
                         echo "Application health check FAILED"
 
                         echo ""
                         echo "Recent PM2 logs:"
-                        pm2 logs "${APP_NAME}" --lines 50 --nostream || true
+
+                        pm2 logs "${APP_NAME}" \
+                            --lines 50 \
+                            --nostream || true
 
                         exit 1
                     fi
                 '''
             }
         }
+
 
         stage('Deployment Information') {
             steps {
@@ -437,9 +493,10 @@ pipeline {
 
                     echo ""
                     echo "Application : ${APP_NAME}"
+                    echo "Server      : 172.16.0.112"
                     echo "Directory   : ${DEPLOY_DIR}"
                     echo "Port        : ${PORT}"
-                    echo "URL         : http://localhost:${PORT}"
+                    echo "URL         : http://172.16.0.112:${PORT}"
                     echo ""
 
                     echo "PM2 status:"
@@ -451,6 +508,7 @@ pipeline {
             }
         }
     }
+
 
     post {
 
@@ -470,13 +528,17 @@ pipeline {
        DEPLOYMENT FAILED
 ==============================================
 '''
+
             sh '''
                 echo "PM2 status:"
                 pm2 status || true
 
                 echo ""
                 echo "Recent application logs:"
-                pm2 logs "${APP_NAME}" --lines 50 --nostream || true
+
+                pm2 logs "${APP_NAME}" \
+                    --lines 50 \
+                    --nostream || true
             '''
         }
 
@@ -489,3 +551,4 @@ pipeline {
         }
     }
 }
+```
