@@ -1,22 +1,19 @@
 pipeline {
+
     agent any
 
     environment {
-        APP_NAME = 'essl-monitor'
-        APP_DIR = '/opt/essl-monitor'
-        BACKEND_DIR = 'essl-monitor/backend'
-        CURRENT_DIR = '/opt/essl-monitor/current'
-
-        APP_PORT = '5001'
-        PM2_APP_NAME = 'essl-attendance-monitor'
-
-        DB_NAME = 'essl_attendance'
-        DB_USER = 'essl_app'
-        DB_HOST = '127.0.0.1'
-        DB_PORT = '5432'
+        APP_ROOT = "/opt/essl-monitor"
+        APP_DIR  = "/opt/essl-monitor/current"
+        ENV_FILE = "/opt/essl-monitor/.env"
+        PORT     = "5001"
     }
 
     stages {
+
+        // =====================================================
+        // CHECKOUT
+        // =====================================================
 
         stage('Checkout') {
             steps {
@@ -27,6 +24,11 @@ pipeline {
                 checkout scm
             }
         }
+
+
+        // =====================================================
+        // ENVIRONMENT CHECK
+        // =====================================================
 
         stage('Environment Check') {
             steps {
@@ -57,6 +59,11 @@ pipeline {
             }
         }
 
+
+        // =====================================================
+        // VALIDATE PROJECT
+        // =====================================================
+
         stage('Validate Project') {
             steps {
                 sh '''
@@ -66,32 +73,31 @@ pipeline {
                     echo "Validating Project"
                     echo "======================================"
 
-                    if [ ! -d "$BACKEND_DIR" ]; then
-                        echo "ERROR: $BACKEND_DIR not found"
+                    if [ ! -d essl-monitor/backend ]; then
+                        echo "ERROR: Backend directory not found"
                         exit 1
                     fi
 
-                    if [ ! -f "$BACKEND_DIR/package.json" ]; then
+                    if [ ! -f essl-monitor/backend/package.json ]; then
                         echo "ERROR: package.json not found"
                         exit 1
                     fi
 
-                    if [ ! -f "$BACKEND_DIR/src/server.js" ]; then
-                        echo "ERROR: src/server.js not found"
-                        exit 1
-                    fi
-
-                    if [ ! -f "$BACKEND_DIR/src/db/migrate.js" ]; then
-                        echo "ERROR: src/db/migrate.js not found"
+                    if [ ! -f essl-monitor/backend/src/server.js ]; then
+                        echo "ERROR: server.js not found"
                         exit 1
                     fi
 
                     echo "Project structure OK"
-
                     echo "======================================"
                 '''
             }
         }
+
+
+        // =====================================================
+        // INSTALL DEPENDENCIES
+        // =====================================================
 
         stage('Install Dependencies') {
             steps {
@@ -102,7 +108,7 @@ pipeline {
                     echo "Installing Dependencies"
                     echo "======================================"
 
-                    cd "$BACKEND_DIR"
+                    cd essl-monitor/backend
 
                     if [ -f package-lock.json ]; then
                         npm ci
@@ -111,11 +117,15 @@ pipeline {
                     fi
 
                     echo "Dependencies installed successfully."
-
                     echo "======================================"
                 '''
             }
         }
+
+
+        // =====================================================
+        // PREPARE PRODUCTION DIRECTORY
+        // =====================================================
 
         stage('Prepare Production Directory') {
             steps {
@@ -126,22 +136,26 @@ pipeline {
                     echo "Preparing Production Directory"
                     echo "======================================"
 
-                    if [ ! -d "$APP_DIR" ]; then
-                        echo "ERROR: $APP_DIR does not exist."
-                        echo ""
-                        echo "Run once on Ubuntu:"
-                        echo "sudo mkdir -p $APP_DIR"
-                        echo "sudo chown -R jenkins:jenkins $APP_DIR"
+                    if [ ! -d "$APP_ROOT" ]; then
+                        echo "ERROR: $APP_ROOT does not exist."
+                        echo "Run once as administrator:"
+                        echo "sudo mkdir -p /opt/essl-monitor"
+                        echo "sudo chown -R jenkins:jenkins /opt/essl-monitor"
                         exit 1
                     fi
 
-                    echo "Production directory exists:"
-                    ls -ld "$APP_DIR"
+                    ls -ld "$APP_ROOT"
 
+                    echo "Production directory ready."
                     echo "======================================"
                 '''
             }
         }
+
+
+        // =====================================================
+        // CHECK DATABASE CONFIGURATION
+        // =====================================================
 
         stage('Check Database Configuration') {
             steps {
@@ -152,70 +166,33 @@ pipeline {
                     echo "Checking Database Configuration"
                     echo "======================================"
 
-                    ENV_FILE="$APP_DIR/.env"
-
                     if [ ! -f "$ENV_FILE" ]; then
-                        echo ""
-                        echo "ERROR: Production .env file not found."
-                        echo ""
-                        echo "Expected:"
-                        echo "$ENV_FILE"
-                        echo ""
-                        echo "Create it ONCE on the server with:"
-                        echo ""
-                        echo "sudo nano $ENV_FILE"
-                        echo ""
-                        echo "Required values:"
-                        echo ""
-                        echo "DB_HOST=127.0.0.1"
-                        echo "DB_PORT=5432"
-                        echo "DB_NAME=essl_attendance"
-                        echo "DB_USER=essl_app"
-                        echo "DB_PASSWORD=YOUR_POSTGRES_PASSWORD"
-                        echo ""
+                        echo "ERROR: $ENV_FILE not found."
                         exit 1
                     fi
 
                     echo ".env file found."
 
-                    # Do not print DB_PASSWORD.
-                    if grep -q '^DB_HOST=' "$ENV_FILE"; then
-                        echo "DB_HOST configured"
-                    else
-                        echo "WARNING: DB_HOST missing"
-                    fi
+                    for VAR in DB_HOST DB_PORT DB_NAME DB_USER DB_PASSWORD
+                    do
+                        if ! grep -q "^${VAR}=" "$ENV_FILE"; then
+                            echo "ERROR: ${VAR} missing from .env"
+                            exit 1
+                        fi
 
-                    if grep -q '^DB_PORT=' "$ENV_FILE"; then
-                        echo "DB_PORT configured"
-                    else
-                        echo "WARNING: DB_PORT missing"
-                    fi
+                        echo "${VAR} configured"
+                    done
 
-                    if grep -q '^DB_NAME=' "$ENV_FILE"; then
-                        echo "DB_NAME configured"
-                    else
-                        echo "WARNING: DB_NAME missing"
-                    fi
-
-                    if grep -q '^DB_USER=' "$ENV_FILE"; then
-                        echo "DB_USER configured"
-                    else
-                        echo "WARNING: DB_USER missing"
-                    fi
-
-                    if grep -q '^DB_PASSWORD=' "$ENV_FILE"; then
-                        echo "DB_PASSWORD configured"
-                    else
-                        echo "ERROR: DB_PASSWORD missing"
-                        exit 1
-                    fi
-
-                    echo "Database configuration check completed."
-
+                    echo "Database configuration OK."
                     echo "======================================"
                 '''
             }
         }
+
+
+        // =====================================================
+        // DEPLOY BACKEND
+        // =====================================================
 
         stage('Deploy Backend') {
             steps {
@@ -226,21 +203,28 @@ pipeline {
                     echo "Deploying Backend"
                     echo "======================================"
 
-                    rm -rf "$CURRENT_DIR"
+                    rm -rf "$APP_DIR"
 
-                    mkdir -p "$CURRENT_DIR"
+                    mkdir -p "$APP_DIR"
 
-                    cp -r "$BACKEND_DIR"/* "$CURRENT_DIR"/
+                    cp -r essl-monitor/backend/package.json \
+                          essl-monitor/backend/package-lock.json \
+                          essl-monitor/backend/src \
+                          "$APP_DIR/"
 
-                    # Copy production environment file.
-                    cp "$APP_DIR/.env" "$CURRENT_DIR/.env"
+                    cp "$ENV_FILE" "$APP_DIR/.env"
 
-                    echo "Backend deployed."
+                    echo "Backend files deployed."
 
                     echo "======================================"
                 '''
             }
         }
+
+
+        // =====================================================
+        // INSTALL PRODUCTION DEPENDENCIES
+        // =====================================================
 
         stage('Install Production Dependencies') {
             steps {
@@ -251,13 +235,9 @@ pipeline {
                     echo "Installing Production Dependencies"
                     echo "======================================"
 
-                    cd "$CURRENT_DIR"
+                    cd "$APP_DIR"
 
-                    if [ -f package-lock.json ]; then
-                        npm ci --omit=dev
-                    else
-                        npm install --omit=dev
-                    fi
+                    npm ci --omit=dev
 
                     echo "Production dependencies installed."
 
@@ -265,6 +245,440 @@ pipeline {
                 '''
             }
         }
+
+
+        // =====================================================
+        // CREATE MIGRATION FILE
+        // =====================================================
+
+        stage('Create Migration File') {
+            steps {
+                sh '''
+                    set -e
+
+                    echo "======================================"
+                    echo "Creating Database Migration File"
+                    echo "======================================"
+
+                    mkdir -p "$APP_DIR/src/db"
+
+                    cat > "$APP_DIR/src/db/migrate.js" <<'EOF'
+
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const dotenv = require('dotenv');
+const { Client } = require('pg');
+
+
+// ---------------------------------------------------------
+// LOAD ENVIRONMENT
+// ---------------------------------------------------------
+
+const envFiles = [
+    '/opt/essl-monitor/.env',
+    '/opt/essl-monitor/current/.env',
+    path.resolve(__dirname, '../../.env')
+];
+
+let loadedEnv = false;
+
+for (const envFile of envFiles) {
+
+    if (fs.existsSync(envFile)) {
+
+        dotenv.config({
+            path: envFile
+        });
+
+        console.log(
+            '[Migrate] Loaded environment:',
+            envFile
+        );
+
+        loadedEnv = true;
+
+        break;
+    }
+}
+
+if (!loadedEnv) {
+
+    console.error(
+        '[Migrate] ERROR: .env file not found'
+    );
+
+    process.exit(1);
+}
+
+
+// ---------------------------------------------------------
+// DATABASE CONFIGURATION
+// ---------------------------------------------------------
+
+const DB_HOST =
+    String(process.env.DB_HOST || '127.0.0.1').trim();
+
+const DB_PORT =
+    Number(process.env.DB_PORT || 5432);
+
+const DB_NAME =
+    String(process.env.DB_NAME || 'essl_attendance').trim();
+
+const DB_USER =
+    String(process.env.DB_USER || 'postgres').trim();
+
+const DB_PASSWORD =
+    String(process.env.DB_PASSWORD || '').trim();
+
+
+// ---------------------------------------------------------
+// DISPLAY CONFIGURATION
+// ---------------------------------------------------------
+
+console.log('');
+console.log('======================================');
+console.log(' eSSL Attendance Database Migration');
+console.log('======================================');
+
+console.log('Host:     ' + DB_HOST);
+console.log('Port:     ' + DB_PORT);
+console.log('Database: ' + DB_NAME);
+console.log('User:     ' + DB_USER);
+
+console.log(
+    'Password: ' +
+    (DB_PASSWORD ? 'configured' : 'NOT CONFIGURED')
+);
+
+console.log('======================================');
+console.log('');
+
+
+// ---------------------------------------------------------
+// VALIDATE PASSWORD
+// ---------------------------------------------------------
+
+if (!DB_PASSWORD) {
+
+    console.error(
+        '[Migrate] ERROR: DB_PASSWORD is missing.'
+    );
+
+    process.exit(1);
+}
+
+
+// ---------------------------------------------------------
+// POSTGRES CLIENT
+// ---------------------------------------------------------
+
+const client = new Client({
+
+    host: DB_HOST,
+
+    port: DB_PORT,
+
+    database: DB_NAME,
+
+    user: DB_USER,
+
+    password: DB_PASSWORD
+
+});
+
+
+// ---------------------------------------------------------
+// DATABASE SCHEMA
+// ---------------------------------------------------------
+
+const schema = `
+
+CREATE TABLE IF NOT EXISTS employees (
+
+    id SERIAL PRIMARY KEY,
+
+    employee_code VARCHAR(100)
+        UNIQUE NOT NULL,
+
+    employee_name VARCHAR(255)
+        NOT NULL,
+
+    department VARCHAR(255),
+
+    designation VARCHAR(255),
+
+    email VARCHAR(255),
+
+    phone VARCHAR(50),
+
+    device_user_id VARCHAR(100),
+
+    status VARCHAR(20)
+        DEFAULT 'active',
+
+    created_at TIMESTAMP
+        DEFAULT CURRENT_TIMESTAMP,
+
+    updated_at TIMESTAMP
+        DEFAULT CURRENT_TIMESTAMP
+);
+
+
+CREATE TABLE IF NOT EXISTS devices (
+
+    id SERIAL PRIMARY KEY,
+
+    device_name VARCHAR(255)
+        NOT NULL,
+
+    model VARCHAR(100),
+
+    ip_address VARCHAR(100)
+        UNIQUE NOT NULL,
+
+    port INTEGER
+        DEFAULT 4370,
+
+    serial_number VARCHAR(255),
+
+    firmware_version VARCHAR(255),
+
+    connection_status VARCHAR(30)
+        DEFAULT 'OFFLINE',
+
+    last_communication TIMESTAMP,
+
+    user_count INTEGER
+        DEFAULT 0,
+
+    attendance_count INTEGER
+        DEFAULT 0,
+
+    created_at TIMESTAMP
+        DEFAULT CURRENT_TIMESTAMP,
+
+    updated_at TIMESTAMP
+        DEFAULT CURRENT_TIMESTAMP
+);
+
+
+CREATE TABLE IF NOT EXISTS attendance (
+
+    id BIGSERIAL PRIMARY KEY,
+
+    employee_id INTEGER
+        REFERENCES employees(id)
+        ON DELETE SET NULL,
+
+    device_id INTEGER
+        REFERENCES devices(id)
+        ON DELETE SET NULL,
+
+    device_user_id VARCHAR(100),
+
+    punch_time TIMESTAMP NOT NULL,
+
+    punch_date DATE NOT NULL,
+
+    punch_type VARCHAR(20)
+        DEFAULT 'NONE',
+
+    verification_type VARCHAR(50),
+
+    work_hours NUMERIC(10,2),
+
+    late_minutes INTEGER
+        DEFAULT 0,
+
+    early_departure_minutes INTEGER
+        DEFAULT 0,
+
+    created_at TIMESTAMP
+        DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE(
+        device_id,
+        device_user_id,
+        punch_time
+    )
+);
+
+
+CREATE TABLE IF NOT EXISTS users (
+
+    id SERIAL PRIMARY KEY,
+
+    username VARCHAR(100)
+        UNIQUE NOT NULL,
+
+    password_hash TEXT
+        NOT NULL,
+
+    role VARCHAR(50)
+        DEFAULT 'admin',
+
+    status VARCHAR(20)
+        DEFAULT 'active',
+
+    created_at TIMESTAMP
+        DEFAULT CURRENT_TIMESTAMP,
+
+    updated_at TIMESTAMP
+        DEFAULT CURRENT_TIMESTAMP
+);
+
+
+CREATE TABLE IF NOT EXISTS system_settings (
+
+    id SERIAL PRIMARY KEY,
+
+    setting_key VARCHAR(255)
+        UNIQUE NOT NULL,
+
+    setting_value TEXT,
+
+    created_at TIMESTAMP
+        DEFAULT CURRENT_TIMESTAMP,
+
+    updated_at TIMESTAMP
+        DEFAULT CURRENT_TIMESTAMP
+);
+
+
+CREATE INDEX IF NOT EXISTS idx_attendance_employee
+ON attendance(employee_id);
+
+
+CREATE INDEX IF NOT EXISTS idx_attendance_device
+ON attendance(device_id);
+
+
+CREATE INDEX IF NOT EXISTS idx_attendance_date
+ON attendance(punch_date);
+
+
+CREATE INDEX IF NOT EXISTS idx_attendance_time
+ON attendance(punch_time);
+
+
+CREATE INDEX IF NOT EXISTS idx_employees_status
+ON employees(status);
+
+
+CREATE INDEX IF NOT EXISTS idx_devices_status
+ON devices(connection_status);
+
+`;
+
+
+// ---------------------------------------------------------
+// RUN MIGRATION
+// ---------------------------------------------------------
+
+async function migrate() {
+
+    console.log(
+        '[Migrate] Applying schema to database:',
+        DB_NAME
+    );
+
+    try {
+
+        await client.connect();
+
+        console.log(
+            '[Migrate] PostgreSQL connection established.'
+        );
+
+        await client.query('BEGIN');
+
+        await client.query(schema);
+
+        await client.query('COMMIT');
+
+        console.log('');
+        console.log('======================================');
+        console.log(' Database migration successful');
+        console.log('======================================');
+
+        console.log(
+            'Database: ' + DB_NAME
+        );
+
+        console.log(
+            'Host:     ' + DB_HOST
+        );
+
+        console.log(
+            'Port:     ' + DB_PORT
+        );
+
+        console.log(
+            'User:     ' + DB_USER
+        );
+
+        console.log('======================================');
+
+    }
+
+    catch (error) {
+
+        console.error('');
+
+        console.error(
+            '[Migrate] Migration failed:'
+        );
+
+        console.error(
+            error.message
+        );
+
+        try {
+
+            await client.query('ROLLBACK');
+
+        }
+
+        catch (_) {}
+
+        process.exitCode = 1;
+
+    }
+
+    finally {
+
+        try {
+
+            await client.end();
+
+        }
+
+        catch (_) {}
+
+    }
+}
+
+
+migrate();
+
+EOF
+
+                    chmod 644 "$APP_DIR/src/db/migrate.js"
+
+                    echo "Migration file created:"
+                    ls -lh "$APP_DIR/src/db/migrate.js"
+
+                    echo "======================================"
+                '''
+            }
+        }
+
+
+        // =====================================================
+        // TEST DATABASE CONNECTION
+        // =====================================================
 
         stage('Test Database Connection') {
             steps {
@@ -275,36 +689,22 @@ pipeline {
                     echo "Testing PostgreSQL Connection"
                     echo "======================================"
 
-                    cd "$CURRENT_DIR"
-
-                    # Load .env variables into this shell.
                     set -a
-                    . "$APP_DIR/.env"
+                    . "$ENV_FILE"
                     set +a
-
-                    echo "Database:"
-                    echo "${DB_NAME:-NOT_SET}"
-
-                    echo "Host:"
-                    echo "${DB_HOST:-NOT_SET}"
-
-                    echo "Port:"
-                    echo "${DB_PORT:-NOT_SET}"
-
-                    echo "User:"
-                    echo "${DB_USER:-NOT_SET}"
 
                     if [ -z "$DB_PASSWORD" ]; then
                         echo "ERROR: DB_PASSWORD is empty."
                         exit 1
                     fi
 
-                    PGPASSWORD="$DB_PASSWORD" psql \
-                        -h "${DB_HOST:-127.0.0.1}" \
-                        -p "${DB_PORT:-5432}" \
+                    PGPASSWORD="$DB_PASSWORD" \
+                    psql \
+                        -h "$DB_HOST" \
+                        -p "$DB_PORT" \
                         -U "$DB_USER" \
                         -d "$DB_NAME" \
-                        -c "SELECT current_database(), current_user;" 
+                        -c "SELECT current_database(), current_user;"
 
                     echo ""
                     echo "PostgreSQL connection successful."
@@ -313,6 +713,11 @@ pipeline {
                 '''
             }
         }
+
+
+        // =====================================================
+        // RUN DATABASE MIGRATION
+        // =====================================================
 
         stage('Run Database Migration') {
             steps {
@@ -323,26 +728,23 @@ pipeline {
                     echo "Running Database Migration"
                     echo "======================================"
 
-                    cd "$CURRENT_DIR"
-
-                    # Load production environment variables.
-                    set -a
-                    . "$APP_DIR/.env"
-                    set +a
-
-                    echo "Running migration..."
+                    cd "$APP_DIR"
 
                     npm run migrate
 
-                    echo ""
-                    echo "Database migration completed successfully."
+                    echo "Database migration completed."
 
                     echo "======================================"
                 '''
             }
         }
 
-        stage('Test Application Syntax') {
+
+        // =====================================================
+        // TEST APPLICATION
+        // =====================================================
+
+        stage('Test Application') {
             steps {
                 sh '''
                     set -e
@@ -351,16 +753,23 @@ pipeline {
                     echo "Testing Node.js Application"
                     echo "======================================"
 
-                    cd "$CURRENT_DIR"
+                    cd "$APP_DIR"
 
                     node --check src/server.js
 
-                    echo "Node.js syntax check passed."
+                    node --check src/db/migrate.js
+
+                    echo "Node.js syntax check successful."
 
                     echo "======================================"
                 '''
             }
         }
+
+
+        // =====================================================
+        // CONFIGURE PM2
+        // =====================================================
 
         stage('Configure PM2') {
             steps {
@@ -371,18 +780,18 @@ pipeline {
                     echo "Configuring PM2"
                     echo "======================================"
 
-                    cd "$CURRENT_DIR"
+                    cd "$APP_DIR"
 
-                    pm2 delete "$PM2_APP_NAME" 2>/dev/null || true
+                    pm2 delete essl-attendance-monitor 2>/dev/null || true
 
                     pm2 start src/server.js \
-                        --name "$PM2_APP_NAME" \
-                        --update-env
+                        --name essl-attendance-monitor \
+                        --time
 
                     pm2 save
 
-                    echo ""
-                    echo "PM2 status:"
+                    echo "PM2 application started."
+
                     pm2 status
 
                     echo "======================================"
@@ -390,10 +799,15 @@ pipeline {
             }
         }
 
+
+        // =====================================================
+        // HEALTH CHECK
+        // =====================================================
+
         stage('Health Check') {
             steps {
                 sh '''
-                    set +e
+                    set -e
 
                     echo "======================================"
                     echo "Health Check"
@@ -401,57 +815,54 @@ pipeline {
 
                     sleep 5
 
-                    echo "PM2 status:"
+                    echo "PM2 Status:"
                     pm2 status
 
                     echo ""
-                    echo "Checking port $APP_PORT..."
+                    echo "Testing application port..."
 
-                    if ss -ltn | grep -q ":$APP_PORT "; then
-                        echo "SUCCESS: Port $APP_PORT is listening."
-                    else
-                        echo "WARNING: Port $APP_PORT is not listening."
-                    fi
-
-                    echo ""
-                    echo "Testing HTTP endpoint..."
-
-                    HTTP_CODE=$(curl \
-                        -s \
-                        -o /dev/null \
-                        -w "%{http_code}" \
-                        --connect-timeout 5 \
+                    if curl -f \
                         --max-time 10 \
-                        "http://127.0.0.1:$APP_PORT/")
+                        http://127.0.0.1:${PORT}/
+                    then
 
-                    echo "HTTP Status: $HTTP_CODE"
+                        echo ""
+                        echo "======================================"
+                        echo "Application is healthy."
+                        echo "======================================"
 
-                    if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 500 ]; then
-                        echo "SUCCESS: Application is responding."
                     else
-                        echo "WARNING: Application health check returned HTTP $HTTP_CODE"
+
+                        echo ""
+                        echo "ERROR: Application health check failed."
+
+                        pm2 logs essl-attendance-monitor \
+                            --lines 50 \
+                            --nostream || true
+
+                        exit 1
+
                     fi
-
-                    echo ""
-                    echo "Recent PM2 logs:"
-                    pm2 logs "$PM2_APP_NAME" --lines 20 --nostream
-
-                    echo "======================================"
                 '''
             }
         }
     }
 
+
+    // =========================================================
+    // POST ACTIONS
+    // =========================================================
+
     post {
 
         success {
+
             echo '''
 ========================================
  eSSL Attendance Monitor
- Deployment SUCCESS
+ Deployment SUCCESSFUL
 ========================================
-
-Dashboard:
+Application:
 http://172.16.0.111:5001/
 
 PM2:
@@ -460,13 +871,12 @@ essl-attendance-monitor
 Database:
 essl_attendance
 
-Status:
-DEPLOYED SUCCESSFULLY
 ========================================
 '''
         }
 
         failure {
+
             echo '''
 ========================================
  eSSL Attendance Monitor
@@ -475,20 +885,8 @@ DEPLOYED SUCCESSFULLY
 
 Check the failed Jenkins stage.
 
-Most common causes:
-1. Missing /opt/essl-monitor/.env
-2. Incorrect PostgreSQL password
-3. PostgreSQL user does not exist
-4. Database does not exist
-5. Migration error
-6. Application port 5001 already in use
-
 ========================================
 '''
-        }
-
-        always {
-            echo 'Jenkins pipeline completed.'
         }
     }
 }
