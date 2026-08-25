@@ -11,10 +11,18 @@ pipeline {
     }
 
     environment {
-        APP_NAME = 'essl-monitor'
-        APP_ROOT = '/opt/essl-monitor'
-        APP_CURRENT = '/opt/essl-monitor/current'
-        APP_PORT = '5001'
+        APP_NAME        = 'essl-monitor'
+        APP_ROOT        = '/opt/essl-monitor'
+        BACKEND_IMAGE   = 'essl-monitor-backend'
+        FRONTEND_IMAGE  = 'essl-monitor-frontend'
+
+        BACKEND_CONTAINER  = 'essl-monitor-backend'
+        FRONTEND_CONTAINER = 'essl-monitor-frontend'
+
+        BACKEND_PORT = '5001'
+        FRONTEND_PORT = '8080'
+
+        DOCKER_NETWORK = 'essl-monitor-network'
     }
 
     stages {
@@ -28,23 +36,36 @@ pipeline {
                     echo "        ENVIRONMENT CHECK"
                     echo "=========================================="
 
-                    echo "Jenkins user:"
+                    echo "User:"
                     whoami
 
+                    echo ""
                     echo "Node:"
                     node -v
 
+                    echo ""
                     echo "NPM:"
                     npm -v
 
+                    echo ""
                     echo "Git:"
                     git --version
 
+                    echo ""
+                    echo "Docker:"
+                    docker --version
+
+                    echo ""
+                    echo "Docker Compose:"
+                    docker compose version || true
+
+                    echo ""
                     echo "PostgreSQL:"
                     psql --version
 
-                    echo "PM2:"
-                    pm2 -v
+                    echo ""
+                    echo "Docker access:"
+                    docker ps
                 '''
             }
         }
@@ -59,29 +80,90 @@ pipeline {
                     echo "=========================================="
 
                     test -d essl-monitor/backend
+                    test -d essl-monitor/frontend
+
                     test -f essl-monitor/backend/package.json
                     test -f essl-monitor/backend/package-lock.json
                     test -f essl-monitor/backend/src/server.js
                     test -f essl-monitor/backend/src/db/migrate.js
 
-                    echo "Project structure OK"
+                    test -f essl-monitor/frontend/index.html
+                    test -f essl-monitor/frontend/dashboard.html
+
+                    echo ""
+                    echo "Backend structure: OK"
+                    echo "Frontend structure: OK"
                 '''
             }
         }
 
-        stage('Check Server Environment') {
+        stage('Prepare Docker Files') {
             steps {
                 sh '''
                     set -eu
 
-                    test -d "$APP_ROOT"
+                    echo "=========================================="
+                    echo "       PREPARING DOCKER FILES"
+                    echo "=========================================="
+
+                    mkdir -p "$APP_ROOT"
+
+                    cat > essl-monitor/backend/Dockerfile <<'EOF'
+FROM node:20-bookworm-slim
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV TZ=Asia/Kolkata
+
+COPY package*.json ./
+
+RUN npm ci --omit=dev
+
+COPY src ./src
+
+EXPOSE 5001
+
+CMD ["node", "src/server.js"]
+EOF
+
+                    cat > essl-monitor/frontend/Dockerfile <<'EOF'
+FROM nginx:alpine
+
+ENV TZ=Asia/Kolkata
+
+COPY . /usr/share/nginx/html/
+
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]
+EOF
+
+                    echo ""
+                    echo "Backend Dockerfile created."
+                    echo "Frontend Dockerfile created."
+                '''
+            }
+        }
+
+        stage('Prepare Environment') {
+            steps {
+                sh '''
+                    set -eu
+
+                    echo "=========================================="
+                    echo "       CHECKING APPLICATION ENV"
+                    echo "=========================================="
 
                     if [ ! -f "$APP_ROOT/.env" ]; then
-                        echo "ERROR: $APP_ROOT/.env not found"
+                        echo "ERROR: $APP_ROOT/.env does not exist."
+                        echo ""
+                        echo "Create it first:"
+                        echo "sudo nano $APP_ROOT/.env"
                         exit 1
                     fi
 
-                    echo ".env found"
+                    echo ".env found."
 
                     set +x
                     set -a
@@ -95,28 +177,33 @@ pipeline {
                     : "${DB_USER:?DB_USER missing}"
                     : "${DB_PASSWORD:?DB_PASSWORD missing}"
 
-                    echo "Database host: $DB_HOST"
-                    echo "Database port: $DB_PORT"
-                    echo "Database name: $DB_NAME"
-                    echo "Database user: $DB_USER"
-                    echo "Database password: configured"
+                    echo "Database host : $DB_HOST"
+                    echo "Database port : $DB_PORT"
+                    echo "Database name : $DB_NAME"
+                    echo "Database user : $DB_USER"
+                    echo "Database password : configured"
 
-                    echo "Server configuration OK"
+                    echo "Environment configuration OK."
                 '''
             }
         }
 
-        stage('Install Dependencies') {
+        stage('Backend Dependency Test') {
             steps {
                 dir('essl-monitor/backend') {
                     sh '''
                         set -eu
 
-                        echo "Installing dependencies..."
+                        echo "Installing backend dependencies for validation..."
 
                         npm ci
 
-                        echo "Dependencies installed successfully"
+                        echo "Backend dependencies installed."
+
+                        node --check src/server.js
+                        node --check src/db/migrate.js
+
+                        echo "Backend JavaScript syntax OK."
                     '''
                 }
             }
@@ -141,78 +228,7 @@ pipeline {
                         -d "$DB_NAME" \
                         -c "SELECT current_database(), current_user;"
 
-                    echo "PostgreSQL connection successful"
-                '''
-            }
-        }
-
-        stage('Prepare Backup') {
-            steps {
-                sh '''
-                    set -eu
-
-                    mkdir -p "$APP_ROOT/backup"
-
-                    if [ -d "$APP_CURRENT" ]; then
-
-                        BACKUP_NAME="$APP_ROOT/backup/backup-$(date +%Y%m%d-%H%M%S)"
-
-                        mkdir -p "$BACKUP_NAME"
-
-                        cp -a "$APP_CURRENT"/. "$BACKUP_NAME"/
-
-                        echo "Backup created:"
-                        echo "$BACKUP_NAME"
-
-                    else
-                        echo "No previous deployment found."
-                    fi
-                '''
-            }
-        }
-
-        stage('Prepare Deployment') {
-            steps {
-                sh '''
-                    set -eu
-
-                    TEMP_DIR="$APP_ROOT/deploy-${BUILD_NUMBER}"
-
-                    rm -rf "$TEMP_DIR"
-                    mkdir -p "$TEMP_DIR"
-
-                    cp essl-monitor/backend/package.json "$TEMP_DIR/"
-                    cp essl-monitor/backend/package-lock.json "$TEMP_DIR/"
-                    cp -r essl-monitor/backend/src "$TEMP_DIR/"
-                    cp "$APP_ROOT/.env" "$TEMP_DIR/.env"
-
-                    cd "$TEMP_DIR"
-
-                    npm ci --omit=dev
-
-                    echo "Deployment directory prepared:"
-                    echo "$TEMP_DIR"
-                '''
-            }
-        }
-
-        stage('Verify Deployment') {
-            steps {
-                sh '''
-                    set -eu
-
-                    TEMP_DIR="$APP_ROOT/deploy-${BUILD_NUMBER}"
-
-                    test -f "$TEMP_DIR/package.json"
-                    test -f "$TEMP_DIR/package-lock.json"
-                    test -f "$TEMP_DIR/src/server.js"
-                    test -f "$TEMP_DIR/src/db/migrate.js"
-                    test -f "$TEMP_DIR/.env"
-
-                    node --check "$TEMP_DIR/src/server.js"
-                    node --check "$TEMP_DIR/src/db/migrate.js"
-
-                    echo "Application syntax OK"
+                    echo "PostgreSQL connection successful."
                 '''
             }
         }
@@ -222,21 +238,17 @@ pipeline {
                 sh '''
                     set -eu
 
-                    TEMP_DIR="$APP_ROOT/deploy-${BUILD_NUMBER}"
+                    echo "=========================================="
+                    echo "       DATABASE MIGRATION"
+                    echo "=========================================="
 
-                    cd "$TEMP_DIR"
+                    cd essl-monitor/backend
 
                     set +x
                     set -a
                     . "$APP_ROOT/.env"
                     set +a
                     set -x
-
-                    export DB_HOST
-                    export DB_PORT
-                    export DB_NAME
-                    export DB_USER
-                    export DB_PASSWORD
 
                     export DATABASE_HOST="$DB_HOST"
                     export DATABASE_PORT="$DB_PORT"
@@ -252,99 +264,158 @@ pipeline {
 
                     node src/db/migrate.js
 
-                    echo "Database migration completed successfully."
+                    echo "Database migration completed."
                 '''
             }
         }
 
-        stage('Deploy Application') {
+        stage('Create Docker Network') {
             steps {
                 sh '''
                     set -eu
 
-                    TEMP_DIR="$APP_ROOT/deploy-${BUILD_NUMBER}"
-
-                    test -d "$TEMP_DIR"
-
-                    pm2 delete "$APP_NAME" 2>/dev/null || true
-
-                    if [ -d "$APP_CURRENT" ]; then
-                        rm -rf "$APP_ROOT/previous"
-                        mv "$APP_CURRENT" "$APP_ROOT/previous"
+                    if ! docker network inspect "$DOCKER_NETWORK" >/dev/null 2>&1; then
+                        echo "Creating Docker network..."
+                        docker network create "$DOCKER_NETWORK"
+                    else
+                        echo "Docker network already exists."
                     fi
-
-                    mv "$TEMP_DIR" "$APP_CURRENT"
-
-                    cd "$APP_CURRENT"
-
-                    pm2 start src/server.js \
-                        --name "$APP_NAME" \
-                        --cwd "$APP_CURRENT" \
-                        --time \
-                        --update-env
-
-                    pm2 save
-
-                    echo "Application started."
-
-                    pm2 status
                 '''
             }
         }
 
-        stage('Health Check') {
+        stage('Build Backend Image') {
             steps {
                 sh '''
                     set -eu
 
                     echo "=========================================="
-                    echo "        HEALTH CHECK"
+                    echo "       BUILDING BACKEND IMAGE"
                     echo "=========================================="
 
-                    sleep 5
+                    docker build \
+                        --pull \
+                        -t "$BACKEND_IMAGE:$BUILD_NUMBER" \
+                        -t "$BACKEND_IMAGE:latest" \
+                        essl-monitor/backend
 
-                    pm2 status
+                    echo "Backend image built successfully."
+                '''
+            }
+        }
 
-                    PM2_STATUS=$(pm2 jlist | node -e '
-                        let input = "";
+        stage('Build Frontend Image') {
+            steps {
+                sh '''
+                    set -eu
 
-                        process.stdin.on("data", d => input += d);
+                    echo "=========================================="
+                    echo "       BUILDING FRONTEND IMAGE"
+                    echo "=========================================="
 
-                        process.stdin.on("end", () => {
-                            try {
-                                const data = JSON.parse(input);
+                    docker build \
+                        --pull \
+                        -t "$FRONTEND_IMAGE:$BUILD_NUMBER" \
+                        -t "$FRONTEND_IMAGE:latest" \
+                        essl-monitor/frontend
 
-                                const app = data.find(
-                                    x => x.name === process.argv[1]
-                                );
+                    echo "Frontend image built successfully."
+                '''
+            }
+        }
 
-                                if (!app) {
-                                    console.log("NOT_FOUND");
-                                } else {
-                                    console.log(app.pm2_env.status);
-                                }
+        stage('Stop Old Containers') {
+            steps {
+                sh '''
+                    set -eu
 
-                            } catch (e) {
-                                console.log("ERROR");
-                            }
-                        });
-                    ' "$APP_NAME")
+                    echo "=========================================="
+                    echo "       STOPPING OLD CONTAINERS"
+                    echo "=========================================="
 
-                    echo "PM2 status: $PM2_STATUS"
+                    docker rm -f "$BACKEND_CONTAINER" 2>/dev/null || true
+                    docker rm -f "$FRONTEND_CONTAINER" 2>/dev/null || true
 
-                    if [ "$PM2_STATUS" != "online" ]; then
-                        echo "ERROR: PM2 application is NOT online."
+                    echo "Old containers removed."
+                '''
+            }
+        }
 
-                        pm2 logs "$APP_NAME" \
-                            --lines 50 \
-                            --nostream || true
+        stage('Start Backend Container') {
+            steps {
+                sh '''
+                    set -eu
 
+                    echo "=========================================="
+                    echo "       STARTING BACKEND CONTAINER"
+                    echo "=========================================="
+
+                    docker run -d \
+                        --name "$BACKEND_CONTAINER" \
+                        --restart unless-stopped \
+                        --network "$DOCKER_NETWORK" \
+                        --env-file "$APP_ROOT/.env" \
+                        -p "$BACKEND_PORT:5001" \
+                        "$BACKEND_IMAGE:latest"
+
+                    echo "Backend container started."
+                '''
+            }
+        }
+
+        stage('Start Frontend Container') {
+            steps {
+                sh '''
+                    set -eu
+
+                    echo "=========================================="
+                    echo "       STARTING FRONTEND CONTAINER"
+                    echo "=========================================="
+
+                    docker run -d \
+                        --name "$FRONTEND_CONTAINER" \
+                        --restart unless-stopped \
+                        --network "$DOCKER_NETWORK" \
+                        -p "$FRONTEND_PORT:80" \
+                        "$FRONTEND_IMAGE:latest"
+
+                    echo "Frontend container started."
+                '''
+            }
+        }
+
+        stage('Wait For Containers') {
+            steps {
+                sh '''
+                    set -eu
+
+                    echo "Waiting for containers..."
+
+                    sleep 10
+
+                    docker ps \
+                        --filter "name=$BACKEND_CONTAINER" \
+                        --filter "name=$FRONTEND_CONTAINER"
+                '''
+            }
+        }
+
+        stage('Backend Health Check') {
+            steps {
+                sh '''
+                    set -eu
+
+                    echo "=========================================="
+                    echo "       BACKEND HEALTH CHECK"
+                    echo "=========================================="
+
+                    if ! docker ps --format '{{.Names}}' | grep -qx "$BACKEND_CONTAINER"; then
+                        echo "ERROR: Backend container is not running."
+                        docker logs "$BACKEND_CONTAINER" --tail 100 || true
                         exit 1
                     fi
 
-                    echo "PM2 application is ONLINE."
-
-                    echo "Checking application port $APP_PORT..."
+                    echo "Backend container is running."
 
                     HTTP_CODE=$(curl \
                         -s \
@@ -352,48 +423,84 @@ pipeline {
                         -w "%{http_code}" \
                         --connect-timeout 5 \
                         --max-time 10 \
-                        "http://127.0.0.1:$APP_PORT/")
+                        "http://127.0.0.1:$BACKEND_PORT/")
 
-                    echo "HTTP response code: $HTTP_CODE"
+                    echo "Backend HTTP response: $HTTP_CODE"
 
                     case "$HTTP_CODE" in
-                        2*)
-                            echo "HTTP success."
-                            ;;
-                        3*)
-                            echo "HTTP redirect."
-                            ;;
-                        4*)
-                            echo "Application is responding."
-                            echo "HTTP $HTTP_CODE accepted."
-                            ;;
-                        5*)
-                            echo "ERROR: Server returned HTTP $HTTP_CODE"
-
-                            pm2 logs "$APP_NAME" \
-                                --lines 50 \
-                                --nostream || true
-
-                            exit 1
-                            ;;
-                        000)
-                            echo "ERROR: Application is not reachable."
-
-                            pm2 logs "$APP_NAME" \
-                                --lines 50 \
-                                --nostream || true
-
-                            exit 1
+                        2*|3*|4*)
+                            echo "Backend is responding."
                             ;;
                         *)
-                            echo "ERROR: Unexpected HTTP code $HTTP_CODE"
+                            echo "ERROR: Backend is not responding."
+                            docker logs "$BACKEND_CONTAINER" --tail 100 || true
                             exit 1
                             ;;
                     esac
+                '''
+            }
+        }
+
+        stage('Frontend Health Check') {
+            steps {
+                sh '''
+                    set -eu
 
                     echo "=========================================="
-                    echo "        HEALTH CHECK PASSED"
+                    echo "       FRONTEND HEALTH CHECK"
                     echo "=========================================="
+
+                    if ! docker ps --format '{{.Names}}' | grep -qx "$FRONTEND_CONTAINER"; then
+                        echo "ERROR: Frontend container is not running."
+                        docker logs "$FRONTEND_CONTAINER" --tail 100 || true
+                        exit 1
+                    fi
+
+                    echo "Frontend container is running."
+
+                    HTTP_CODE=$(curl \
+                        -s \
+                        -o /dev/null \
+                        -w "%{http_code}" \
+                        --connect-timeout 5 \
+                        --max-time 10 \
+                        "http://127.0.0.1:$FRONTEND_PORT/")
+
+                    echo "Frontend HTTP response: $HTTP_CODE"
+
+                    case "$HTTP_CODE" in
+                        2*|3*)
+                            echo "Frontend is responding."
+                            ;;
+                        *)
+                            echo "ERROR: Frontend is not responding."
+                            docker logs "$FRONTEND_CONTAINER" --tail 100 || true
+                            exit 1
+                            ;;
+                    esac
+                '''
+            }
+        }
+
+        stage('Container Status') {
+            steps {
+                sh '''
+                    echo "=========================================="
+                    echo "       CONTAINER STATUS"
+                    echo "=========================================="
+
+                    docker ps \
+                        --filter "name=$BACKEND_CONTAINER" \
+                        --filter "name=$FRONTEND_CONTAINER" \
+                        --format "table {{.Names}}\\t{{.Status}}\\t{{.Ports}}"
+
+                    echo ""
+                    echo "Backend logs:"
+                    docker logs "$BACKEND_CONTAINER" --tail 30 || true
+
+                    echo ""
+                    echo "Frontend logs:"
+                    docker logs "$FRONTEND_CONTAINER" --tail 30 || true
                 '''
             }
         }
@@ -401,33 +508,55 @@ pipeline {
         stage('Deployment Information') {
             steps {
                 sh '''
-                    echo "=========================================="
+                    echo ""
+                    echo "=============================================="
                     echo "       DEPLOYMENT SUCCESSFUL"
-                    echo "=========================================="
+                    echo "=============================================="
 
                     echo ""
-                    echo "Application : $APP_NAME"
-                    echo "Directory   : $APP_CURRENT"
-                    echo "Port        : $APP_PORT"
-                    echo "Dashboard   : http://172.16.0.111:$APP_PORT"
+                    echo "Application : eSSL Attendance Monitor"
 
                     echo ""
-                    echo "PM2 status:"
-                    pm2 status
+                    echo "Frontend:"
+                    echo "http://172.16.0.111:8080"
+
+                    echo ""
+                    echo "Backend:"
+                    echo "http://172.16.0.111:5001"
+
+                    echo ""
+                    echo "Backend container:"
+                    echo "$BACKEND_CONTAINER"
+
+                    echo ""
+                    echo "Frontend container:"
+                    echo "$FRONTEND_CONTAINER"
+
+                    echo ""
+                    echo "Docker images:"
+                    docker images | grep essl-monitor || true
+
+                    echo ""
+                    echo "Running containers:"
+                    docker ps
                 '''
             }
         }
     }
 
     post {
+
         success {
             echo '''
 ==============================================
        eSSL ATTENDANCE MONITOR
-       DEPLOYMENT SUCCESSFUL
+       DOCKER DEPLOYMENT SUCCESSFUL
 ==============================================
 
-Dashboard:
+Frontend:
+http://172.16.0.111:8080
+
+Backend:
 http://172.16.0.111:5001
 '''
         }
@@ -435,19 +564,27 @@ http://172.16.0.111:5001
         failure {
             sh '''
                 echo "=========================================="
-                echo "       DEPLOYMENT FAILED"
+                echo "       DOCKER DEPLOYMENT FAILED"
                 echo "=========================================="
 
-                pm2 status || true
+                echo ""
+                echo "Containers:"
+                docker ps -a \
+                    --filter "name=$BACKEND_CONTAINER" \
+                    --filter "name=$FRONTEND_CONTAINER" || true
 
-                pm2 logs "$APP_NAME" \
-                    --lines 50 \
-                    --nostream || true
+                echo ""
+                echo "Backend logs:"
+                docker logs "$BACKEND_CONTAINER" --tail 100 2>/dev/null || true
+
+                echo ""
+                echo "Frontend logs:"
+                docker logs "$FRONTEND_CONTAINER" --tail 100 2>/dev/null || true
             '''
         }
 
         always {
-            echo "Jenkins deployment process completed."
+            echo "Jenkins Docker deployment process completed."
         }
     }
 }
